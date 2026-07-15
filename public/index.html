@@ -17,7 +17,11 @@
     header h1 { font-size:16px; margin:0; }
     header .sub { color:var(--muted); font-size:12px; }
     .wrap { display:flex; gap:12px; padding:12px; height:calc(100vh - 64px); box-sizing:border-box; }
-    .side { width:178px; background:var(--surface-2); border:.5px solid var(--border); border-radius:12px; padding:12px; flex-shrink:0; overflow:auto; }
+    .side { width:178px; background:var(--surface-2); border:.5px solid var(--border); border-radius:12px; padding:12px; flex-shrink:0; overflow:auto;
+            display:flex; flex-direction:column; }   /* 批③：flex 把底部⚙设置顶到底 */
+    .side-settings { margin-top:10px; padding-top:10px; border-top:1px solid var(--border); flex-shrink:0; display:block; }
+    .side-settings .gear-btn { width:100%; text-align:left; }
+    .dd-menu.dd-up { top:auto; bottom:calc(100% + 4px); left:0; right:auto; }   /* 左栏底部→菜单向上弹 */
     .tab { padding:7px 10px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:5px; color:var(--muted); }
     .tab:hover { background:var(--panel); }
     .tab.active { background:#17314e; color:#bcdcff; font-weight:600; box-shadow:inset 3px 0 0 var(--blue); }
@@ -337,41 +341,33 @@
 </head>
 <body>
   <header>
-    <div class="hdr-left"><img src="https://tejoy.com/static/tejoy-logo-white.png" alt="TEJOY" title="回今日待办首页" onclick="openToday()" style="height:22px;width:auto;display:block"></div>
+    <!-- 批③顶栏收口：顶栏 = logo + 搜索，右侧空。
+         所有动作都回到它所属的阶段页；设置移到左栏底部。
+         群发→待发送页「全部发送」；回复箱→已回复页；批量分析→待分析页；批量找邮箱/Hunter→待审批页；导入CSV→找客户页。 -->
+    <div class="hdr-left"><img src="https://tejoy.com/static/tejoy-logo-white.png" alt="TEJOY" title="回待办事项首页" onclick="openToday()" style="height:22px;width:auto;display:block"></div>
     <div class="hdr-right-zone">
-      <div class="hdr-actions">
-        <button id="btn-send" class="btn-green">群发开发信</button>
-        <button id="btn-replies">回复箱</button>
-        <button id="btn-dashboard" style="display:none">数据看板</button>
-        <div class="dd-wrap">
-          <button id="btn-more" class="tb-more">批量工具 ▾</button>
-          <div class="dd-menu" id="acq-more-dd">
-            <button id="btn-import" class="dd-item">导入 CSV</button>
-            <button id="btn-batch" class="dd-item">批量分析</button>
-            <button id="btn-findmail" class="dd-item">批量找邮箱</button>
-            <button id="btn-hunter" class="dd-item" title="对官网抓不到邮箱的公司，用 Hunter 按域名查（每家1积分）">🔑 Hunter 补邮箱</button>
-          </div>
-        </div>
-        <button id="btn-today" style="display:none">今日待办</button>
-        <button id="btn-discover" style="display:none">找客户</button>
-      </div>
-      <div class="hdr-right">
-        <input type="search" id="q" placeholder="搜索…" />
-        <div class="settings-menu">
-          <button id="btn-settings" class="gear-btn">⚙ 设置 ▾</button>
-          <div class="dd-menu" id="settings-dd">
-            <button id="btn-profile" class="dd-item">客户画像</button>
-            <button id="btn-sendcfg" class="dd-item">发信设置</button>
-            <button id="btn-notify" class="dd-item">🔔 飞书通知</button>
-            <div class="dd-sep"></div>
-            <div class="dd-static" id="whoami"></div>
-          </div>
-        </div>
-      </div>
+      <input type="search" id="q" placeholder="搜索公司 / 邮箱 / 域名…" />
+      <!-- 左栏导航的隐藏代理按钮（左栏 side-nav 的 handler 靠它们，勿删） -->
+      <button id="btn-today" style="display:none">待办事项</button>
+      <button id="btn-discover" style="display:none">找客户</button>
+      <button id="btn-dashboard" style="display:none">数据看板</button>
     </div>
   </header>
   <div class="wrap">
-    <nav class="side" id="side"></nav>
+    <!-- 批③顶栏收口：左栏 = 导航+漏斗（#side 由 loadStats 渲染，flex:1 撑开）→ 底部⚙设置 -->
+    <nav class="side">
+      <div id="side" style="flex:1;min-height:0"></div>
+      <div class="settings-menu side-settings">
+        <button id="btn-settings" class="gear-btn">⚙ 设置 ▾</button>
+        <!-- 在左栏底部，菜单向上弹 -->
+        <div class="dd-menu dd-up" id="settings-dd">
+          <button id="btn-sendcfg" class="dd-item">发信设置</button>
+          <button id="btn-notify" class="dd-item">🔔 飞书通知</button>
+          <div class="dd-sep"></div>
+          <div class="dd-static" id="whoami"></div>
+        </div>
+      </div>
+    </nav>
     <div class="main">
       <div id="v-list">
       <div class="filters">
@@ -398,7 +394,7 @@
         <thead><tr><th><input type="checkbox" id="sel-all" title="全选当前筛选" onclick="event.stopPropagation();toggleSelAll(this.checked)"> 公司</th><th>评分</th><th>阶段</th><th>邮箱</th><th>分类</th><th>国家</th><th class="chcol">LinkedIn</th><th class="chcol">WhatsApp</th><th class="chcol">Facebook</th><th class="chcol">Instagram</th><th class="chcol">电话</th><th>录入时间</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
-      <div class="empty" id="empty" style="display:none">暂无数据。点左栏「🎯 找客户」开始，或「批量工具 → 导入 CSV」加线索。</div>
+      <div class="empty" id="empty" style="display:none">暂无数据。去左栏「🎯 找客户」加线索——免费目录源（零成本）／导入 CSV（自有名单）／关键词搜索。</div>
       </div>
       <div id="v-page" style="display:none"></div>
       <div id="v-found" style="display:none">
@@ -422,6 +418,13 @@
           </div>
           <div class="prog-log" id="fc-free-log" style="margin-top:8px;display:none"></div>
           <div id="fc-free-result" style="margin-top:8px"></div>
+        </div>
+
+        <!-- 批③顶栏收口：导入 CSV 从「批量工具」下拉挪来这里，作为第三个线索来源 -->
+        <div class="fc-card">
+          <div class="sec-title">📄 导入 CSV <span class="fc-badge fc-badge-free">自有名单 · 零成本</span></div>
+          <div class="hint" style="margin:4px 0 10px">把你手上已有的公司名单贴进来入库；同样自动去重、进「待分析」等 AI 打分。不花任何积分。</div>
+          <button id="btn-import" class="primary">📄 导入 CSV</button>
         </div>
 
         <!-- 3) 关键词搜索（花 Serper 积分）：手动·跑一次 + 自动·后台 -->
@@ -489,36 +492,10 @@
     <div class="modal detail-modal" id="detail"></div>
   </div>
 
-  <!-- 找客户配置弹层 -->
-  <!-- 客户画像设置弹层 -->
-  <div class="overlay" id="profile-overlay">
-    <div class="modal">
-      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
-      <h2>客户画像（AI 打分 / 写信依据）</h2>
-      <p class="hint">描述你的理想客户。AI 会据此判断契合度并撰写开发信。留空则用内置默认画像。</p>
-      <textarea id="profile-input" style="min-height:220px"></textarea>
-      <div class="actions">
-        <button class="primary" id="save-profile">保存</button>
-        <button id="cancel-profile">取消</button>
-        <span class="hint" id="profile-result"></span>
-      </div>
-    </div>
-  </div>
+  <!-- 批③顶栏收口：客户画像弹层已删 —— 它已是「找客户」页顶部第①块（全局打分标准），两处一份会打架 -->
 
-  <!-- 回复箱弹层 -->
-  <div class="overlay" id="replies-overlay">
-    <div class="modal" style="width:min(760px,94vw)">
-      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
-      <h2>回复箱 <span class="hint" id="replies-count"></span></h2>
-      <p class="hint">客户对开发信的回复，自动匹配线索 + AI 分类。Cron 每 6 小时自动拉；也可手动拉取。</p>
-      <div class="actions" style="margin:10px 0">
-        <button class="primary" id="btn-fetch-replies">立即拉取新回复</button>
-        <span class="hint" id="fetch-replies-status"></span>
-      </div>
-      <div id="replies-list" style="max-height:56vh;overflow:auto"></div>
-      <div class="actions"><button id="cancel-replies">关闭</button></div>
-    </div>
-  </div>
+  <!-- 批③追加2：回复箱弹层已删 —— 已并入「已回复」格页面（每行=线索+最新回复摘要+AI分类徽章；
+       起草回复/拉取新回复 在该页工具栏；完整往来看线索详情时间线）。顺带结掉 #37 回复箱 UX 重设计。 -->
 
   <!-- 发信设置弹层 -->
   <div class="overlay" id="sendcfg-overlay">
@@ -759,7 +736,7 @@
       for (const [st,n] of Object.entries(bs)) if (map[st]) groupCount[map[st]] += n;
       groupCount.viewed = s.viewed || 0;                                        // #39 已查看 = sent 且有点击
       groupCount.sent = Math.max(0, (groupCount.sent||0) - groupCount.viewed);  // 已发送 = sent 总 − 已查看（互斥）
-      { const sb = $("#btn-send"); if (sb) sb.textContent = `群发开发信 (${groupCount.ready||0})`; }  // 群发按钮带待发送计数
+      // 批③：顶栏群发按钮已删，这里不再需要给它挂待发送计数（计数已在左栏「待发送」格上）
       // 侧栏顶部：📋今日待办 + 🎯找客户（导航项，点击复用现有隐藏按钮 handler）；下方=竖向漏斗
       const tabHtml = t => `<div class="tab ${t.key===current?"active":""}" data-k="${t.key}">${t.label} <span class="cnt">(${groupCount[t.key]??0})</span></div>`;
       const chain = TABS.slice(1);
@@ -858,9 +835,11 @@
         { t:"趁热跟进选中", cls:"btn-amber", sel:true, fn:"toolFollowupSel(true)" },
         { t:"放弃选中 → 已忽略", cls:"", sel:true, fn:"toolStatusSel('ignored','放弃')" },
       ],
-      replied: [
+      replied: [   // 批③追加2：回复箱并入本页 —— 每行=线索+最新回复摘要+AI分类徽章，起草回复在这里
         { t:"标记成交", cls:"btn-won", sel:true, fn:"toolStatusSel('won','标记成交')" },
         { t:"婉拒归档 → 已忽略", cls:"btn-amber", sel:true, fn:"toolStatusSel('ignored','婉拒归档')" },
+        { t:"🤖 起草回复", cls:"", sel:true, fn:"toolDraftReply()" },
+        { t:"⟳ 拉取新回复", cls:"", fn:"toolFetchReplies()" },
       ],
       won: [],          // 终点，无出口动作
       ignored: [
@@ -1050,7 +1029,7 @@
       // 阶段列取代原公司名旁的状态徽章（更信息量：漏斗阶段+下一步）；保留 🔔待跟进 + 🔥/👀参与标记
       $("#rows").innerHTML = leads.map(l => { const stg = stageOf(l); return `
         <tr class="row" data-id="${l.id}">
-          <td><div style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="rowchk" ${selectedIds.has(String(l.id))?'checked':''} onclick="event.stopPropagation()" onchange="toggleSel(${l.id},this.checked)"><div class="co-name" title="${esc(l.company_name)||''}">${isDue(l)?`<span class="due-flag" title="该跟进了：${esc(l.next_action)||''} (${esc(l.next_action_date)})">🔔 </span>`:""}${esc(l.company_name)||"<span class='muted'>—</span>"}${l.has_click?`<span title="点击过开发信（强意向）" style="margin-left:4px">🔥</span>`:(l.has_open?`<span title="打开过开发信" style="margin-left:4px">👀</span>`:"")}</div></div>${l.website?`<a class="wsite" href="${esc(l.website)}" target="_blank" onclick="event.stopPropagation()" style="margin-left:22px">${esc(hostOf(l.website))}</a>`:""}</td>
+          <td><div style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="rowchk" ${selectedIds.has(String(l.id))?'checked':''} onclick="event.stopPropagation()" onchange="toggleSel(${l.id},this.checked)"><div class="co-name" title="${esc(l.company_name)||''}">${isDue(l)?`<span class="due-flag" title="该跟进了：${esc(l.next_action)||''} (${esc(l.next_action_date)})">🔔 </span>`:""}${esc(l.company_name)||"<span class='muted'>—</span>"}${l.has_click?`<span title="点击过开发信（强意向）" style="margin-left:4px">🔥</span>`:(l.has_open?`<span title="打开过开发信" style="margin-left:4px">👀</span>`:"")}</div></div>${l.website?`<a class="wsite" href="${esc(l.website)}" target="_blank" onclick="event.stopPropagation()" style="margin-left:22px">${esc(hostOf(l.website))}</a>`:""}${(current==='replied'&&(l.latest_reply_cat||l.latest_reply_summary))?`<div style="margin-left:22px;margin-top:3px;display:flex;align-items:center;gap:6px;min-width:0">${l.latest_reply_cat?`<span class="pill" style="background:${catColor[l.latest_reply_cat]||'#555'};color:#fff;flex-shrink:0">${esc(catLabel[l.latest_reply_cat]||l.latest_reply_cat)}</span>`:''}${l.latest_reply_summary?`<span class="co-name muted" style="font-size:12px" title="${esc(l.latest_reply_summary)}">🤖 ${esc(l.latest_reply_summary)}</span>`:''}</div>`:''}</td>
           <td>${scoreBadge(l.match_score)}</td>
           <td><span class="stg ${stg.cls}">${stg.badge}</span></td>
           <td>${l.email?esc(l.email):"<span class='miss'>缺邮箱</span>"}</td>
@@ -1314,7 +1293,7 @@
             ${!lead.email?`<button onclick="findMail(${lead.id},false)">找邮箱(免费)</button><button class="btn-amber" onclick="findMail(${lead.id},true)">Hunter找(1积分)</button>`:""}
             <span class="dp-sep"></span>
             ${preSend ? `<button class="btn-green dp-primary" ${canSend?"":"disabled title=\"需先AI打分且有邮箱\""} onclick="approveAndReview(${lead.id})">✅ 批准发送</button>`
-              : isReplied ? `<button class="btn-green dp-primary" onclick="document.getElementById('btn-replies').click()">📥 去回复箱</button>`
+              : isReplied ? `<button class="btn-green dp-primary" onclick="gotoGroup('replied')">📥 去已回复</button>`
               : isSent ? `<button class="btn-green dp-primary" onclick="focusNextAction()">📅 安排跟进</button>` : ''}
             ${lead.status!=='won'?`<button class="btn-won" onclick="setStatus(${lead.id},'won')">标记已下单</button>`:""}
             <button class="btn-amber" onclick="setStatus(${lead.id},'ignored')">忽略</button>
@@ -1465,20 +1444,8 @@
       return { done:doneProc, ok:doneOk, remaining:(stF.byStatus||{}).new || 0, rounds, hitCap:rounds>=MAX_ROUNDS };
     }
 
-    // 批量分析（不搜索，只处理已有 new 线索）—— 点一次抽干积压，显示进度
-    $("#btn-batch").onclick = async () => {
-      const s = $("#batch-status"), btn = $("#btn-batch");
-      btn.disabled = true;
-      const r = await drainAnalyze((ok, remaining, total)=>{ s.textContent = `批量分析中…已分析 ${ok}/${total}，剩 ${remaining}`; });
-      btn.disabled = false;
-      if (r.error) { s.textContent = `分析出错：${r.error}（已分析 ${r.ok}，可再点续跑）`; loadStats(); loadList(); loadFacets(); return; }
-      s.textContent = r.stalled
-        ? `分析停滞：已分析 ${r.ok}，仍剩 ${r.remaining} 且无进展（多为模型 key/网络问题，请检查后重试）`
-        : r.remaining
-          ? `已分析 ${r.ok} 条，仍剩 ${r.remaining}${r.hitCap ? "（达单次上限，再点一次续跑）" : "（交后台）"}`
-          : `✅ 全部分析完成：共 ${r.ok} 条`;
-      loadStats(); loadList(); loadFacets();
-    };
+    // 批③顶栏收口：#btn-batch(批量分析) 已删 —— 功能归「待分析」格的「立即分析选中」。
+    // drainAnalyze 保留（找客户流水线仍在用）。
 
     // 单条立即发送
     window.sendOne = async (id) => {
@@ -1489,21 +1456,8 @@
       await openDetail(id); loadStats(); loadList();
     };
 
-    // 批量发送已批准
-    $("#btn-send").onclick = async () => {
-      const s = $("#batch-status");
-      if (!(await uiConfirm({ title:'群发开发信', body:'批量发送已批准线索（按分数从高到低，遵守每日上限）？\n发出不可撤（发件 hello@tejoy.net）。', confirmText:'确认群发' }))) return;
-      s.textContent = "发送中…";
-      const res = await fetch("/api/send/batch", { method:"POST",
-        headers:{"content-type":"application/json"}, body:JSON.stringify({limit:10}) })
-        .then(r=>r.json()).catch(e=>({error:String(e)}));
-      if (res.error) { s.textContent = "失败: " + res.error; return; }
-      if (res.capReached && res.processed===0) { s.textContent = `已达今日上限（${res.dailyLimit} 封，今日已发 ${res.sentToday}）`; return; }
-      const fail = res.results.filter(r=>!r.ok);
-      const failMsg = fail.length ? `，失败/跳过 ${fail.length}（${fail[0].error||fail[0].skipped||""}）` : "";
-      s.textContent = `已发 ${res.sent}/${res.processed}${failMsg}｜今日累计 ${res.sentToday}/${res.dailyLimit}`;
-      loadStats(); loadList();
-    };
+    // 批③顶栏收口：#btn-send(群发开发信) 已删 —— 它无视当前页、永远发全部 approved，
+    // 正是"筛出35条却发全部"事故的元凶。功能归「待发送」格的「全部发送/发送选中」（后端 sendApprovedBatch 原样复用）。
 
     // 单条找邮箱（useHunter=false 免费抓官网；true 走 Hunter 花1积分）
     window.findMail = async (id, useHunter=false) => {
@@ -1513,32 +1467,8 @@
       else alert(useHunter ? "Hunter 也没找到公开邮箱（可能确实只有联系表单）。" : "官网没抓到公开邮箱。可点「Hunter找(1积分)」用 Hunter 兜底。");
     };
 
-    // 批量找邮箱（免费：只抓官网，不花 Hunter 积分）
-    $("#btn-findmail").onclick = async () => {
-      const s = $("#batch-status");
-      s.textContent = "找邮箱中…（免费抓联系页，可能需 1-2 分钟）";
-      const res = await fetch("/api/emails/find-batch", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({limit:20}) })
-        .then(r=>r.json()).catch(e=>({error:String(e)}));
-      if (res.error) { s.textContent = "失败: " + res.error; return; }
-      s.textContent = `找邮箱完成：${res.found}/${res.processed} 家补上了邮箱（免费抓取）`;
-      loadStats(); loadList(); loadFacets();
-    };
-
-    // Hunter 补邮箱（手动，花积分；只对官网免费抓不到的公司生效）
-    $("#btn-hunter").onclick = async () => {
-      const st = await fetch("/api/hunter/status").then(r=>r.json()).catch(()=>({}));
-      if (!st.enabled) { alert("Hunter 未启用（未配置 API key）。"); return; }
-      if (!st.targets) { alert("当前没有『已分析但缺邮箱』的线索需要补。"); return; }
-      const remain = st.available!=null ? st.available : "?";
-      const n = Math.min(st.targets, 15);
-      if (!(await uiConfirm({ title:'Hunter 补邮箱', body:`将对最多 ${n} 家缺邮箱公司用 Hunter 查询（每家 1 积分，最多花 ${n} 积分）。\nHunter 本月剩余：${remain} 积分。\n（只对官网免费抓不到邮箱的公司生效）`, confirmText:'继续' }))) return;
-      const s = $("#batch-status"); s.textContent = "Hunter 补邮箱中…";
-      const res = await fetch("/api/emails/find-batch", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({limit:15, useHunter:true}) })
-        .then(r=>r.json()).catch(e=>({error:String(e)}));
-      if (res.error) { s.textContent = "失败: " + res.error; return; }
-      s.textContent = `Hunter 补邮箱完成：新增邮箱 ${res.found}/${res.processed}，消耗 ${res.hunterUsed||0} 积分`;
-      loadStats(); loadList(); loadFacets();
-    };
+    // 批③顶栏收口：#btn-findmail(批量找邮箱) 与 #btn-hunter(Hunter补邮箱) 已删 ——
+    // 都归「待审批」格的「缺邮箱 → 批量补邮箱」；Hunter 变成那个弹窗里的选项（useHunter，写明每家1积分+本月剩余）。
 
     // ===== 找客户配置面板（#45 国家/关键词 勾选框 + 增删 + 全选/全不选 + 持久化）=====
     let _fcAllCountries = {};          // 目录 { gl: 中文名 }
@@ -1782,42 +1712,36 @@
     // 回复箱
     const catLabel = { interested:"有意向", inquiry:"询价", not_interested:"无兴趣", complaint:"投诉", other:"其他" };
     const catColor = { interested:"var(--green)", inquiry:"var(--blue)", not_interested:"#666", complaint:"var(--red)", other:"#555" };
-    async function renderReplies() {
-      const { replies } = await fetch("/api/replies").then(r=>r.json());
-      $("#replies-count").textContent = `共 ${replies.length} 封`;
-      $("#replies-list").innerHTML = replies.length ? replies.map(r=>`
-        <div style="border-bottom:1px solid var(--border);padding:10px 0">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span><span class="pill" style="background:${catColor[r.category]||'#555'};color:#fff">${catLabel[r.category]||r.category}</span>
-              <b style="margin-left:8px">${esc(r.company_name)||esc(r.from_email)||'(未知)'}</b></span>
-            <span class="muted" style="font-size:12px">${esc(r.received_at||'')}</span>
-          </div>
-          <div class="muted" style="font-size:12px;margin:3px 0">${esc(r.from_email)} · ${esc(r.subject)||'(无主题)'}</div>
-          ${r.summary?`<div style="font-size:13px;color:#cfd6e2">🤖 ${esc(r.summary)}</div>`:''}
-          <details style="margin-top:4px"><summary class="hint" style="cursor:pointer">看正文</summary>
-            <div style="white-space:pre-wrap;font-size:13px;color:#b9c0cc;margin-top:6px;max-height:200px;overflow:auto">${esc(r.content||'')}</div></details>
-          ${r.category!=='not_interested'&&r.category!=='complaint'?`<div style="margin-top:6px"><button class="mini btn-amber" onclick="draftReply(${r.id}, this)">🤖 AI 起草回复</button></div>`:''}
-          <div id="draft-${r.id}"></div>
-        </div>`).join("") : '<div class="muted" style="padding:20px;text-align:center">还没有回复。发出去的开发信有人回复后，点上方「立即拉取」或等 Cron 自动拉。</div>';
-    }
-    // 回复 AI 起草
-    window.draftReply = async (id, btn) => {
-      btn.disabled = true; const t = btn.textContent; btn.textContent = "起草中…（约 10-20 秒）";
-      const res = await fetch(`/api/replies/${id}/draft`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
-      btn.disabled = false; btn.textContent = t;
-      if (res.error) { alert("起草失败: " + res.error); return; }
-      const box = document.getElementById(`draft-${id}`);
-      box.innerHTML = `<div class="hint" style="margin:8px 0 3px">🤖 AI 起草（供参考，复制到邮箱里发给客户；未自动发送）：</div><textarea style="min-height:130px">${esc(res.draft)}</textarea>`;
+    // ===== 批③追加2：回复箱并入「已回复」页（顺带结掉 #37 回复箱 UX 重设计）=====
+    // 原来的 #replies-overlay 弹层已删。页面数据源 = /api/leads?group=replied（每行一个线索），
+    // 最新回复摘要 + AI 分类徽章直接长在行里；完整往来看线索详情的时间线。
+    // 「起草回复」需选中 1 条 → 取该线索最新一封回复 → /api/replies/:id/draft → 只读展示（不自动发送）
+    window.toolDraftReply = async () => {
+      const ids=[...selectedIds].map(Number);
+      if (ids.length !== 1){ toolMsg("「起草回复」请只勾选 <b>1 条</b>线索（AI 要针对那一封回复来写）。"); return; }
+      const leadId = ids[0];
+      toolMsg("读取该线索最新回复…");
+      const { replies=[] } = await fetch("/api/replies").then(r=>r.json()).catch(()=>({replies:[]}));
+      const mine = replies.filter(r=>Number(r.lead_id)===leadId);
+      if (!mine.length){ toolMsg("这条线索还没有匹配到回复原文（可能回复未拉取，或未匹配上）。可先点「⟳ 拉取新回复」。"); return; }
+      const r0 = mine[0];   // /api/replies 已按最新在前
+      toolMsg("🤖 起草中…（约 10-20 秒）");
+      const res = await fetch(`/api/replies/${r0.id}/draft`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error){ toolMsg("起草失败: "+esc(res.error)); return; }
+      toolMsg("✅ 已起草");
+      await uiConfirm({
+        title:`🤖 AI 起草回复 · ${r0.company_name||r0.from_email||('#'+leadId)}`,
+        body:`客户回复摘要：${r0.summary||'(无)'}\n\n—— 以下是 AI 起草（仅供参考，请复制到邮箱里自己发；系统不会自动发送）——\n\n${res.draft||''}`,
+        confirmText:"知道了", cancelText:"关闭",
+      });
     };
-    $("#btn-replies").onclick = async () => { await renderReplies(); $("#replies-overlay").classList.add("show"); };
-    $("#cancel-replies").onclick = () => $("#replies-overlay").classList.remove("show");
-    $("#btn-fetch-replies").onclick = async () => {
-      const s = $("#fetch-replies-status"); s.textContent = "拉取中…（连 Lark IMAP，约需 5-15 秒）";
+    // 手动拉取新回复（Cron 每 6 小时也会自动拉）
+    window.toolFetchReplies = async () => {
+      toolMsg("拉取中…（连 Lark IMAP，约需 5-15 秒）");
       const res = await fetch("/api/replies/fetch", { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
-      if (res.error) { s.textContent = "失败: " + res.error; return; }
-      if (res.baseline) { s.textContent = "首次已建立基线（只处理今后的新回复）"; }
-      else s.textContent = `拉取 ${res.fetched}，入库 ${res.ingested}，匹配线索 ${res.matched}`;
-      renderReplies(); loadStats(); loadList();
+      if (res.error){ toolMsg("失败: "+esc(res.error)); return; }
+      toolMsg(res.baseline ? "首次已建立基线（只处理今后的新回复）" : `✅ 拉取 ${res.fetched}，入库 ${res.ingested}，匹配线索 ${res.matched}`);
+      loadStats(); loadList(); loadFacets();
     };
 
     // 发信设置
@@ -1872,20 +1796,8 @@
       $("#ntf-result").textContent = res.ok ? "已发送，去飞书群看卡片 ✅" : ("失败: "+(res.error||""));
     };
 
-    // 客户画像
-    $("#btn-profile").onclick = async () => {
-      const { profile } = await fetch("/api/settings/profile").then(r=>r.json());
-      $("#profile-input").value = profile;
-      $("#profile-overlay").classList.add("show");
-    };
-    $("#cancel-profile").onclick = () => $("#profile-overlay").classList.remove("show");
-    $("#save-profile").onclick = async () => {
-      const profile = $("#profile-input").value;
-      $("#profile-result").textContent = "保存中…";
-      const res = await fetch("/api/settings/profile", { method:"POST",
-        headers:{"content-type":"application/json"}, body:JSON.stringify({profile}) }).then(r=>r.json());
-      $("#profile-result").textContent = res.ok ? "已保存" : ("错误: " + (res.error||""));
-    };
+    // 批③顶栏收口：设置里的「客户画像」及其弹层已删 —— 客户画像已是「找客户」页顶部第①块（全局打分标准），
+    // 两处各存一份会打架。保存仍走同一个 /api/settings/profile（saveSearchCfg 里）。
 
     // ===== 数据看板 =====
     const FUNNEL_STAGES = [
@@ -2034,9 +1946,10 @@
       return `<div class="act-panel"><div class="act-title">${esc(title)}</div>${rows}</div>`;
     }
     window.dashAction = (a) => {
-      if (a==='send'){ showMainView('list'); const b=document.getElementById('btn-send'); if(b) b.click(); }
-      else if (a==='replies'){ const b=document.getElementById('btn-replies'); if(b) b.click(); }
-      else if (a==='findmail'){ showMainView('list'); const b=document.getElementById('btn-findmail'); if(b) b.click(); }
+      // 批③：顶栏按钮已删 → 一律跳到"动作所属的那一格"，让用户在该格里用它的出口动作（不做隔空动作）
+      if (a==='send'){ gotoGroup('ready'); }            // 群发 → 待发送格（那里有「全部发送/发送选中」）
+      else if (a==='replies'){ gotoGroup('replied'); }  // 回复箱 → 已回复格
+      else if (a==='findmail'){ gotoGroup('review'); }  // 补邮箱 → 待审批格（那里有「缺邮箱→批量补邮箱」）
       else if (a && a.indexOf('group:')===0){ gotoGroup(a.slice(6)); }
     };
     window.closeDashboard = () => showMainView("list");
@@ -2088,7 +2001,7 @@
       dd.querySelectorAll(".dd-item").forEach(it => it.addEventListener("click", () => dd.classList.remove("show")));
     }
     wireDropdown("btn-settings", "settings-dd");
-    wireDropdown("btn-more", "acq-more-dd");
+    // 批③：「批量工具 ▾」下拉整个已删（四项全部归位到各自阶段页/找客户页），无需再接线
     document.addEventListener("click", (e) => {
       if (!e.target.closest(".settings-menu") && !e.target.closest(".dd-wrap"))
         document.querySelectorAll(".dd-menu.show").forEach(m => m.classList.remove("show"));
