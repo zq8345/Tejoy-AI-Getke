@@ -1,0 +1,21 @@
+{
+  "name": "tejoy-ai-getke",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TEJOY AI 自动获客系统 - 后台 + D1 + CSV 导入 (P1)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init:local": "wrangler d1 execute tejoy_getke --local --file=./schema.sql",
+    "db:init:remote": "wrangler d1 execute tejoy_getke --remote --file=./schema.sql",
+    "db:seed:local": "wrangler d1 execute tejoy_getke --local --file=./seed.sql"
+  },
+  "dependencies": {
+    "hono": "^4.6.14",
+    "postal-mime": "^2.4.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260708.1",
+    "wrangler": "^4.110.0"
+  }
+}

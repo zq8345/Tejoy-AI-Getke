@@ -1,0 +1,73 @@
+{
+  // TEJOY AI 自动获客 - Cloudflare Workers 配置
+  // 部署前需把 database_id 替换为真实 D1 id（wrangler d1 create tejoy_getke 会生成）
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tejoy-ai-getke",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // 后台前端静态资源（public/ 目录）
+  // run_worker_first: Worker 先跑，让 Basic Auth 中间件也能保护静态页面
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  // D1 数据库绑定
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tejoy_getke",
+      "database_id": "86d5a4d9-0a32-4fff-aaeb-3857a384b62a"
+    }
+  ],
+
+  // 非机密变量（模型随时可改）。机密（OPENROUTER_API_KEY）：
+  //   本地 → .dev.vars 文件；线上 → wrangler secret put OPENROUTER_API_KEY
+  "vars": {
+    // 注意：该 OpenRouter 账号被美国厂商(Anthropic/OpenAI/Google)按区域 ToS 拒绝(403)，
+    // 只能用中国厂商模型。打分=DeepSeek(便宜)，写信=Qwen 高阶(质量好)。
+    "SCORE_MODEL": "deepseek/deepseek-chat",
+    "EMAIL_MODEL": "qwen/qwen3.7-max",
+    "SITE_URL": "https://tejoy.com",
+
+    // P3 发信身份。机密 RESEND_API_KEY 放 .dev.vars / wrangler secret。
+    // APP_URL 用于生成退订链接，部署后改成线上地址。
+    "SENDER_EMAIL": "hello@tejoy.net",
+    "SENDER_NAME": "Tejoy",
+    // APP_URL：退订链接用（必须公开可访问，故用 workers.dev，不放 Access 后面）
+    "APP_URL": "https://tejoy-ai-getke.zq8345.workers.dev",
+    // ADMIN_HOST/ADMIN_URL：团队后台自定义域名，受 Cloudflare Access 保护（每人邮箱登录）
+    "ADMIN_HOST": "admin.tejoy.com",
+    "ADMIN_URL": "https://admin.tejoy.com",
+
+    // P5 自动找客户。搜索提供商=serper（serper.dev，Google 搜索 API，有免费额度）。
+    // 机密 SEARCH_API_KEY 放 .dev.vars / wrangler secret。
+    "SEARCH_PROVIDER": "serper",
+
+    // 后台登录用户名（非机密）。密码 ADMIN_PASSWORD 用 wrangler secret / .dev.vars。
+    "ADMIN_USER": "tejoy",
+
+    // P4 收回复：Lark 公共邮箱 IMAP。密码 LARK_IMAP_PASS 用 secret / .dev.vars。
+    "LARK_IMAP_HOST": "imap.larksuite.com",
+    "LARK_IMAP_PORT": "993",
+    "LARK_IMAP_USER": "hello@tejoy.net"
+  },
+
+  // Cron：每 6 小时自动找客户 + 分析（部署后生效；本地 dev 不自动跑）
+  "triggers": {
+    "crons": ["0 */6 * * *"]
+  },
+
+  // 团队后台自定义域名（Cloudflare 自动建 DNS + 证书）。前提：tejoy.com 在同一 CF 账号。
+  // Access（Zero Trust）在后台对该域名启用邮箱验证码登录后，团队即可每人邮箱登录。
+  "routes": [
+    { "pattern": "admin.tejoy.com", "custom_domain": true }
+  ],
+
+  // 保留 workers.dev 路由：①退订链接(APP_URL)必须公开可访问 ②Basic Auth 应急入口。
+  // 加了 routes 后 workers.dev 默认会被关，必须显式设 true。
+  "workers_dev": true
+}

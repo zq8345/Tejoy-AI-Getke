@@ -1,0 +1,1996 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TEJOY AI 获客后台</title>
+  <link rel="icon" href="https://tejoy.com/favicon.ico?v=2" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="https://tejoy.com/favicon.svg?v=2">
+
+  <style>
+    :root { --bg:#0f1115; --panel:#181b22; --surface-2:#171a21; --border:#2a2f3a; --text:#e6e8ee; --muted:#9aa3b2;
+            --green:#2f9e6d; --red:#c0392b; --amber:#c9820a; --blue:#2f6fd6; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:14px/1.5 -apple-system,Segoe UI,Roboto,"Microsoft YaHei",sans-serif;
+           background:var(--bg); color:var(--text); }
+    header { padding:14px 12px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; }
+    header h1 { font-size:16px; margin:0; }
+    header .sub { color:var(--muted); font-size:12px; }
+    .wrap { display:flex; gap:12px; padding:12px; height:calc(100vh - 64px); box-sizing:border-box; }
+    .side { width:178px; background:var(--surface-2); border:.5px solid var(--border); border-radius:12px; padding:12px; flex-shrink:0; overflow:auto; }
+    .tab { padding:7px 10px; border-radius:6px; cursor:pointer; display:flex; align-items:center; gap:5px; color:var(--muted); }
+    .tab:hover { background:var(--panel); }
+    .tab.active { background:#17314e; color:#bcdcff; font-weight:600; box-shadow:inset 3px 0 0 var(--blue); }
+    .tab.active:hover { background:#1b3a5c; }
+    .tab .cnt { color:var(--muted); font-size:12px; }
+    .tab.active .cnt { color:#9fc6ee; }
+    .main { flex:1; overflow:auto; padding:16px 20px; background:var(--surface-2); border:.5px solid var(--border); border-radius:12px; }
+    .toolbar { display:flex; gap:10px; margin-bottom:10px; align-items:center; flex-wrap:wrap; }
+    input,select,textarea,button { font:inherit; }
+    input[type=search] { background:var(--panel); border:1px solid var(--border); color:var(--text);
+                         padding:7px 10px; border-radius:6px; width:240px; }
+    button { background:var(--panel); border:1px solid var(--border); color:var(--text);
+             padding:7px 12px; border-radius:6px; cursor:pointer; }
+    button:hover { border-color:#3d4351; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
+    button.mini { padding:5px 10px; font-size:13px; }
+    .filters { display:flex; gap:8px; margin-bottom:14px; align-items:center; flex-wrap:wrap; }
+    .filters select { background:var(--panel); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; }
+    .filters .fl { color:var(--muted); font-size:12px; margin-right:-2px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--border); vertical-align:top; word-break:break-word; }
+    th { color:var(--muted); font-weight:600; font-size:12px; position:relative; }
+    .col-resizer { position:absolute; top:0; right:-3px; width:7px; height:100%; cursor:col-resize; user-select:none; z-index:2; }
+    .col-resizer:hover, .col-resizer.drag { background:var(--blue); opacity:.5; width:3px; right:-1px; }
+    tr.row:hover { background:var(--panel); cursor:pointer; }
+    .pill { padding:2px 8px; border-radius:10px; font-size:12px; white-space:nowrap; }
+    .s-new,.s-analyzed,.s-pending { background:#33383f; color:#cfd6e2; }
+    .s-approved,.s-queued,.s-sent,.s-replied { background:#1e3a2c; color:#7fddac; }
+    .s-won { background:#123a2a; color:#4be3a5; font-weight:600; }
+    .s-followup { background:#1d2b3a; color:#8fc7ff; }
+    .s-ignored { background:#3a2f1e; color:#e0b56a; }
+    .s-blacklisted,.s-unsubscribed,.s-bounced { background:#3a1f1e; color:#e39089; }
+    button.btn-won { background:#1f9d57; border-color:#1f9d57; color:#fff; }
+    /* 联系渠道按钮 */
+    .chan-row { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 4px; }
+    .chan { display:inline-flex; align-items:center; gap:5px; padding:5px 10px; border-radius:6px; font-size:12px;
+            text-decoration:none; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+    .chan:hover { border-color:#3d4351; }
+    .chan-whatsapp { color:#25d366; } .chan-linkedin { color:#4a9fe0; } .chan-telegram { color:#3aa9e0; }
+    .chan-facebook { color:#6a8fd6; } .chan-instagram { color:#e08bb0; } .chan-youtube { color:#e0736a; }
+    /* 时间线 */
+    .tl-row { display:flex; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); }
+    .tl-time { color:var(--muted); white-space:nowrap; font-size:12px; min-width:96px; }
+    .due-flag { color:#e0b56a; }
+    button.tgl-on { background:var(--amber); border-color:var(--amber); color:#fff; }
+    /* 销售漏斗阶段徽章 */
+    .stg { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; white-space:nowrap; }
+    .st-bad { background:#3a1f1e; color:#e39089; }
+    .st-won { background:#123a2a; color:#4be3a5; font-weight:600; }
+    .st-talk { background:#1e3a2c; color:#7fddac; }
+    .st-mute { background:#33383f; color:#9aa3b2; }
+    .st-hot { background:#3a2a12; color:#e0a85a; }
+    .st-sent { background:#12202f; color:#8fc7ff; }
+    .st-send { background:#1d2b3a; color:#8fc7ff; }
+    .st-new { background:#33383f; color:#cfd6e2; }
+    /* 渠道独立列：窄、居中；表加 min-width 让 12 列超宽时走横向滚动而非压扁 */
+    .chcol { width:120px; }
+    th.chcol { text-align:left; overflow:hidden; text-overflow:ellipsis; }
+    .chacct { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-decoration:none; font-size:13px; }
+    .main table { min-width:1620px; }
+    .main th { white-space:nowrap; }
+    .co-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    /* 表头内置筛选 */
+    th.filt { cursor:pointer; }
+    th.filt .fcaret { color:var(--muted); margin-left:6px; display:inline-flex; vertical-align:middle; }
+    th.filt .fcaret svg { display:block; }
+    th.filt .fcaret.fcaret-score { margin-left:12px; padding-left:10px; border-left:1px solid var(--border); }
+    th.filt .sortarrow { color:#8fc7ff; font-size:10px; }
+    /* A3 高分待发横幅 */
+    .hs-banner { background:#123a2a; border:1px solid #1f5a38; color:#7fddac; border-radius:8px;
+                 padding:9px 14px; margin-bottom:10px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    .hs-banner b { color:#4be3a5; }
+    /* B1 批量操作条 */
+    .bulk-bar { background:var(--panel); border:1px solid var(--blue); border-radius:8px; padding:8px 12px;
+                margin-bottom:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .bulk-bar b { color:#8fc7ff; }
+    .rowchk { cursor:pointer; }
+    .bulk-bar.analyzing { border-color:var(--amber); background:#2a2412; color:#e0b56a; }
+    .bulk-bar.analyzing b { color:#f0c66a; }
+    .bulk-prog { display:inline-block; width:130px; height:7px; background:var(--bg); border:1px solid var(--border); border-radius:4px; overflow:hidden; vertical-align:middle; margin-left:8px; }
+    .bulk-prog-fill { display:block; height:100%; background:var(--amber); transition:width .3s; }
+    th.filt:hover .fcaret { color:var(--text); }
+    th.filt.on { color:#8fc7ff; }
+    th.filt.on .fcaret { color:#8fc7ff; }
+    .hdrmenu { position:fixed; display:none; z-index:50; background:var(--panel); border:1px solid var(--border);
+               border-radius:8px; box-shadow:0 8px 28px rgba(0,0,0,.5); padding:5px; min-width:150px; max-height:340px; overflow:auto; }
+    .hdrmenu.show { display:block; }
+    .hdrmenu .mi { padding:7px 10px; border-radius:6px; cursor:pointer; font-size:13px; display:flex; justify-content:space-between; gap:10px; }
+    .hdrmenu .mi:hover { background:var(--bg); }
+    .hdrmenu .mi.sel { color:#8fc7ff; }
+    .hdrmenu .mi .cnt { color:var(--muted); font-size:12px; }
+    /* 一键开聊按钮 */
+    .chat-row { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 2px; }
+    .btn-chat { display:inline-flex; align-items:center; gap:5px; padding:8px 12px; border-radius:8px; font-size:13px;
+                text-decoration:none; border:1px solid var(--border); background:var(--bg); color:var(--text); cursor:pointer; }
+    .btn-chat:hover { border-color:#3d4351; }
+    .ptype { background:#1d2b3a; color:#8fc7ff; }
+    .miss { color:#e39089; font-size:12px; background:#3a1f1e; padding:2px 7px; border-radius:10px; }
+    .wsite { display:block; font-size:12px; color:#6fa8ff; margin-top:2px; text-decoration:none; }
+    .muted { color:var(--muted); }
+    /* 弹层 */
+    .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; }
+    .overlay.show { display:flex; }
+    .modal { background:var(--panel); border:1px solid var(--border); border-radius:10px;
+             width:min(680px,92vw); max-height:88vh; overflow:auto; padding:20px; }
+    .modal h2 { margin:0 0 6px; font-size:17px; }
+    .modal-x { position:sticky; top:-6px; float:right; z-index:5; background:var(--panel);
+               border:none; color:var(--muted); font-size:22px; line-height:1; cursor:pointer;
+               padding:2px 8px; margin:-8px -8px 0 8px; border-radius:6px; transition:color .12s, background .12s; }
+    .modal-x:hover { color:var(--red); background:var(--bg); }
+    /* 详情弹窗三段式：顶固定·中滚动·底固定 */
+    .detail-modal { padding:0; display:flex; flex-direction:column; width:min(720px,94vw); }
+    .detail-top { padding:16px 20px 12px; border-bottom:1px solid var(--border); position:relative; flex-shrink:0; }
+    .detail-mid { padding:12px 20px; overflow:auto; flex:1; min-height:80px; }
+    .detail-bottom { padding:11px 20px; border-top:1px solid var(--border); display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex-shrink:0; }
+    /* 详情整页 v3（渲进 #v-page，两栏：左=理由/开发信/话术，右=国家来源/联系方式/下一步/时间线）*/
+    .dp { max-width:1100px; }
+    .dp-top { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:12px; }
+    .dp-company { font-size:19px; font-weight:700; overflow:hidden; text-overflow:ellipsis; }
+    .dp-scoremeta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-left:auto; }
+    .dp-body { display:grid; grid-template-columns:1fr 340px; gap:14px; align-items:start; }
+    .dp-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+    .dp-left .dp-card:last-child, .dp-right .dp-card:last-child { margin-bottom:0; }
+    .dp-kv { display:flex; justify-content:space-between; gap:10px; padding:3px 0; font-size:13px; }
+    .dp-contact { display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); }
+    .dp-contact:last-child { border-bottom:0; }
+    .dp-c-ic { width:20px; text-align:center; flex-shrink:0; }
+    .dp-c-val { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+    .dp-copy { flex-shrink:0; background:var(--bg); border:1px solid var(--border); color:var(--muted); cursor:pointer; font-size:11px; padding:2px 8px; border-radius:6px; }
+    .dp-copy:hover { color:var(--text); border-color:var(--blue); }
+    /* #44 开发信中文对照面板（只读、内联，不弹窗） */
+    .tr-panel-box { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:9px 11px; }
+    .tr-zh { white-space:pre-wrap; font-size:13px; line-height:1.55; color:var(--text); }
+    /* 批A#5 可复用确认弹窗（遮罩+居中卡片），替代原生 confirm() */
+    .cd-overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:9999; padding:20px; animation:cdFade .12s ease; }
+    @keyframes cdFade { from{opacity:0} to{opacity:1} }
+    .cd-card { background:var(--surface-2); border:1px solid var(--border); border-radius:12px; max-width:420px; width:100%; padding:18px 20px; box-shadow:0 14px 44px rgba(0,0,0,.5); }
+    .cd-title { font-size:15px; font-weight:700; margin-bottom:8px; }
+    .cd-body { font-size:13px; color:var(--text); line-height:1.6; margin-bottom:16px; }
+    .cd-actions { display:flex; justify-content:flex-end; gap:10px; }
+    .cd-actions button { padding:7px 16px; border-radius:7px; font-size:13px; cursor:pointer; transition:filter .15s ease, border-color .15s ease; }
+    .cd-cancel { background:var(--bg); border:1px solid var(--border); color:var(--text); }
+    .cd-cancel:hover { border-color:#3d4351; }
+    .cd-ok { background:var(--blue); border:none; color:#fff; }
+    .cd-ok:hover { filter:brightness(1.12); }
+    .cd-ok.cd-danger { background:#c0392b; }
+    /* #46b 底部决策条：一条淡边框 surface 簇（去掉全宽间隔，按钮聚成一块） */
+    .dp-bottom { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:14px; padding:10px 12px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; }
+    .dp-bottom .dp-sep { width:1px; align-self:stretch; background:var(--border); margin:2px 4px; }  /* 次要↔决策 之间的细分隔，不撑大空档 */
+    /* #46 底部决策条：主操作突出、破坏性弱化最右防误点、次要靠左 */
+    .dp-bottom .dp-primary { font-size:14px; padding:9px 18px; font-weight:600; }
+    .dp-bottom .dp-danger-weak { background:transparent; border:1px solid var(--border); color:var(--muted); margin-left:14px; }
+    .dp-bottom .dp-danger-weak:hover { border-color:#c0392b; color:#e39089; }
+    .dp-bottom .dp-label { font-size:11px; color:var(--muted); margin-right:2px; align-self:center; }
+    @media(max-width:820px){ .dp-body { grid-template-columns:1fr; } }
+    /* 整页视图共用头 */
+    .pg-head { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+    .pg-titlewrap { display:flex; flex-direction:column; line-height:1.25; }
+    .pg-title { font-size:17px; font-weight:700; }
+    .pg-sub { font-size:12px; color:var(--muted); }
+    /* 今日待办 2×2 卡 */
+    .td-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .td-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+    .td-card.td-danger { border-color:#c0392b; }
+    .td-card.td-warn { border-color:var(--amber); }
+    .td-head { font-weight:600; margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+    .td-count { margin-left:auto; background:var(--border); border-radius:10px; padding:0 8px; font-size:12px; color:var(--text); }
+    .td-row { display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); font-size:13px; cursor:pointer; }
+    .td-row:last-child { border-bottom:0; }
+    .td-main { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .td-act { flex-shrink:0; background:var(--bg); border:1px solid var(--border); color:var(--blue); cursor:pointer; font-size:12px; padding:2px 9px; border-radius:6px; }
+    .td-act:hover { border-color:var(--blue); }
+    /* 数据看板 */
+    .kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px; }  /* #47 8 张 KPI → 2 行 4 列 */
+    .kpi-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+    /* #47 行动建议面板（数据看板 + 今日待办共用）+ 线索状态分布 */
+    .act-panel { background:var(--surface-2); border:1px solid var(--border); border-left:3px solid var(--blue); border-radius:10px; padding:11px 14px; margin-bottom:14px; }
+    .act-title { font-size:13px; font-weight:700; margin-bottom:6px; }
+    .act-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 0; border-top:1px solid var(--border); }
+    .act-row:first-of-type { border-top:0; }
+    .act-text { font-size:13px; }
+    .act-btn { flex-shrink:0; background:var(--blue); border:none; color:#fff; font-size:12px; padding:5px 12px; border-radius:6px; cursor:pointer; white-space:nowrap; transition:filter .15s ease; }
+    .act-btn:hover { filter:brightness(1.12); }
+    .sd-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(84px,1fr)); gap:8px; }
+    .sd-cell { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px 6px; text-align:center; }
+    .sd-n { display:block; font-size:18px; font-weight:700; }
+    .sd-l { display:block; font-size:11px; color:var(--muted); margin-top:2px; }
+    .kpi-n { font-size:22px; font-weight:700; }
+    .kpi-l { font-size:12px; color:var(--muted); margin-top:2px; }
+    .db-cols { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .db-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+    .fn-row { display:grid; grid-template-columns:82px 1fr 92px; align-items:center; gap:8px; margin:6px 0; font-size:13px; }
+    .fn-track { background:var(--bg); border-radius:4px; height:18px; overflow:hidden; }
+    .fn-fill { height:100%; background:var(--blue); min-width:2px; }
+    /* 找客户 */
+    .fc-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+    .fc-cc { display:flex; flex-wrap:wrap; gap:6px; }
+    .fc-chip { background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:3px 10px; font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:5px; user-select:none; }
+    .fc-chip.on { background:#12233c; border-color:var(--blue); color:#8fc7ff; }
+    .fc-cta { font-size:15px; padding:11px 22px; }
+    @media(max-width:820px){ .td-grid,.db-cols{ grid-template-columns:1fr; } .kpi-row{ grid-template-columns:repeat(2,1fr); } }
+    .d-company { font-size:18px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:34px; }
+    .d-scorebar { display:flex; gap:14px; align-items:stretch; margin:12px 0 8px; }
+    .d-scoreblock { border-radius:10px; padding:8px 16px; min-width:118px; text-align:center; display:flex; flex-direction:column; justify-content:center; }
+    .d-scoreblock.sc-green { background:#123a2a; color:#4be3a5; } .d-scoreblock.sc-amber { background:#3a2f12; color:#e0b56a; }
+    .d-scoreblock.sc-red { background:#3a1f1e; color:#e39089; } .d-scoreblock.sc-none { background:transparent; border:1px dashed var(--border); color:var(--muted); }
+    .d-scorelabel { font-size:11px; opacity:.85; } .d-scorenum { font-size:32px; font-weight:800; line-height:1.05; }
+    .d-scorenum span { font-size:14px; font-weight:400; opacity:.7; }
+    .d-scoremeta { flex:1; display:flex; flex-direction:column; justify-content:center; gap:5px; font-size:13px; min-width:0; }
+    .d-callout { border-left:3px solid var(--border); background:var(--bg); border-radius:0 8px 8px 0; padding:8px 12px; margin-top:8px; }
+    .clamp2 { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .d-sec { margin:4px 0 14px; }
+    .d-sec-head { display:flex; align-items:center; gap:7px; font-weight:600; font-size:14px; padding:5px 0; }
+    .d-sec details, details.d-sec { margin:4px 0 12px; }
+    .tag { display:inline-block; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:2px 9px; font-size:12px; margin:2px 4px 0 0; }
+    .btn-ghost { background:transparent; }
+    .btn-big { padding:9px 20px; font-size:15px; }
+    .kv { display:grid; grid-template-columns:90px 1fr; gap:6px 12px; margin:14px 0; }
+    .kv .k { color:var(--muted); }
+    textarea { width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text);
+               border-radius:6px; padding:8px; min-height:120px; font-family:ui-monospace,Consolas,monospace; }
+    .actions { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; align-items:center; }
+    .btn-green { background:var(--green); border-color:var(--green); color:#fff; }
+    .btn-amber { background:var(--amber); border-color:var(--amber); color:#fff; }
+    .btn-red { background:var(--red); border-color:var(--red); color:#fff; }
+    .hint { color:var(--muted); font-size:12px; margin-top:6px; }
+    .empty { color:var(--muted); text-align:center; padding:40px; }
+    a { color:#6fa8ff; }
+    /* 找客户面板 */
+    .sec-title { font-size:13px; color:var(--text); margin:16px 0 4px; font-weight:600; }
+    .cc-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(124px,1fr)); gap:6px; margin:8px 0; }  /* 批A#2 加宽容 4 个中文字 */
+    label.cc { display:flex; align-items:center; gap:5px; padding:5px 8px; background:var(--bg); border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:13px; }
+    label.cc input { margin:0; }
+    .kwchip { display:inline-flex; align-items:center; gap:5px; background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:3px 10px; margin:3px 3px 0 0; font-size:13px; }
+    .kwchip i { cursor:pointer; color:var(--muted); font-style:normal; font-size:15px; line-height:1; }
+    .kwchip i:hover { color:#e39089; }
+    /* #45 找客户配置：区块标题+全选/全不选、国家/关键词 勾选框标签+删除 */
+    .sec-row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:12px; }
+    .sec-tools { display:flex; gap:6px; flex-shrink:0; }
+    .mini { font-size:11px; padding:2px 9px; border-radius:6px; }
+    .mini.mini-on { background:#12233c; border-color:var(--blue); color:#8fc7ff; }  /* 管理态高亮 */
+    .fc-warn { color:var(--amber); font-weight:600; }  /* #45 大批量预估醒目提醒 */
+    #fc-profile { min-height:96px; }  /* 客户画像·打分标准（全局，不折叠） */
+    /* 批① IA 徽章 + 子块标题 */
+    .fc-badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px; margin-left:8px; vertical-align:middle; }
+    .fc-badge-free { background:#12331f; color:#5fd08a; border:1px solid #2f7a4d; }
+    .fc-badge-cost { background:#33280f; color:#e0b56a; border:1px solid #7a5f2f; }
+    .fc-subhead { font-size:12px; font-weight:700; color:var(--muted); text-transform:none; letter-spacing:.3px; margin:2px 0 6px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+    .fc-add-sel { min-width:200px; max-width:260px; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:6px; font-size:13px; cursor:pointer; }  /* #45 添加国家选择器：够宽、不再被 .fld 的 80px 压成 glitch */
+    .ccitem, .kwitem { display:inline-flex; align-items:center; gap:6px; background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:4px 11px; margin:5px 7px 0 0; font-size:13px; }  /* #45 chip 间距加大 */
+    .ccitem label, .kwitem label { display:inline-flex; align-items:center; gap:5px; cursor:pointer; margin:0; white-space:nowrap; }  /* 批A#2 国家名不折行 */
+    .ccitem input, .kwitem input { margin:0; }
+    .ccitem.on, .kwitem.on { background:#12233c; border-color:var(--blue); }
+    .ccitem i, .kwitem i { cursor:pointer; color:var(--muted); font-style:normal; font-size:15px; line-height:1; margin-left:2px; }
+    .ccitem i:hover, .kwitem i:hover { color:#e39089; }
+    .transparency { background:#12202f; border:1px solid #1d3a52; border-radius:6px; padding:9px 11px; font-size:13px; margin:12px 0; }
+    .prog { margin-top:14px; display:none; }
+    .prog-track { height:8px; background:var(--bg); border-radius:5px; overflow:hidden; border:1px solid var(--border); }
+    .prog-bar { height:100%; width:0; background:var(--blue); transition:width .35s; }
+    .prog-log { font-size:13px; color:#cfd6e2; margin-top:8px; min-height:20px; white-space:pre-line; }
+    .fld { width:80px; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; }
+    .inlinput { flex:1; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:7px 10px; border-radius:6px; }
+    /* 数据看板 */
+    .dash-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin:14px 0 6px; }
+    .dcard { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px 12px; }
+    .dcard .n { font-size:22px; font-weight:700; line-height:1.1; }
+    .dcard .l { color:var(--muted); font-size:12px; margin-top:3px; }
+    .dcard .s { color:var(--muted); font-size:11px; margin-top:1px; }
+    .dash-sec { font-size:13px; font-weight:600; margin:18px 0 8px; color:var(--text); }
+    .dash-cols { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+    @media (max-width:640px){ .dash-cols { grid-template-columns:1fr; } }
+    .frow { display:grid; grid-template-columns:88px 1fr 40px; align-items:center; gap:8px; margin:5px 0; font-size:13px; }
+    .fbar-track { background:var(--bg); border:1px solid var(--border); border-radius:5px; height:20px; overflow:hidden; }
+    .fbar { height:100%; min-width:2px; border-radius:4px; }
+    .dash-legend { display:flex; gap:14px; align-items:center; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .dash-legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+    /* ==== 顶部 chrome 重排：漏斗面包屑 + 设置▾ + 工具栏语义分组 + 侧栏分组标题 ==== */
+    header h1 .brand-sub { color:var(--muted); font-weight:600; font-size:14px; }
+    .settings-menu, .dd-wrap { position:relative; display:inline-flex; }
+    .gear-btn, .tb-more { background:var(--panel); border:1px solid var(--border); color:var(--text); cursor:pointer; padding:7px 12px; border-radius:8px; font-size:13px; white-space:nowrap; }
+    .gear-btn:hover, .tb-more:hover { border-color:var(--blue); }
+    .dd-menu { position:absolute; right:0; top:calc(100% + 4px); z-index:60; background:var(--panel); border:1px solid var(--border); border-radius:9px; padding:5px; min-width:172px; box-shadow:0 8px 26px rgba(0,0,0,.4); display:none; }
+    .dd-menu.show { display:block; }
+    .dd-wrap .dd-menu { left:0; right:auto; }
+    .dd-menu .dd-item { display:block; width:100%; text-align:left; background:none; border:none; color:var(--text); cursor:pointer; padding:8px 10px; border-radius:6px; font-size:13px; }
+    .dd-menu .dd-item:hover { background:var(--bg); }
+    .dd-sep { height:1px; background:var(--border); margin:5px 2px; }
+    .dd-static { padding:7px 10px; font-size:12px; color:var(--muted); }
+    .dd-static a { color:var(--blue); }
+    .side-div { height:1px; background:var(--border); margin:8px 6px; }
+    .side-arrow { text-align:left; padding-left:12px; color:var(--muted); font-size:11px; line-height:1; margin:2px 0; opacity:.55; }
+    /* 状态统一重构：顶栏合并成一行（brand · 主动作+更多▾ · 搜索+⚙设置▾），漏斗已移除 */
+    header { flex-wrap:nowrap; gap:12px; background:var(--surface-2); }
+    header h1 { white-space:nowrap; }
+    .hdr-actions { display:flex; align-items:center; gap:7px; flex-wrap:nowrap; min-width:0; }
+    .hdr-actions button { white-space:nowrap; padding:6px 10px; }
+    .hdr-right { display:flex; align-items:center; gap:8px; margin-left:auto; flex:0 0 auto; }
+    .hdr-right #q { width:160px; min-width:110px; padding:7px 10px; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:8px; font-size:13px; }
+    .hdr-right .gear-btn { padding:6px 10px; }
+    .hdr-left { width:178px; flex-shrink:0; display:flex; align-items:center; justify-content:center; }  /* 正对左侧栏(178px)：logo 上下+左右居中 */
+    .hdr-right-zone { flex:1; min-width:0; display:flex; align-items:center; gap:12px; }  /* 正对主列表：按钮+搜索+设置 */
+    .side-nav { padding:7px 10px; border-radius:6px; cursor:pointer; color:var(--text); font-size:13px; display:flex; align-items:center; gap:6px; }
+    .side-nav:hover { background:var(--panel); }
+    .side-nav.active { background:#17314e; color:#bcdcff; font-weight:600; box-shadow:inset 3px 0 0 var(--blue); }  /* #42 与漏斗 tab 选中态一致 */
+    .side-nav.active:hover { background:#1b3a5c; }
+    /* #41 全站 hover 交互统一：可点元素加平滑过渡 + 细腻反馈（贴合 CDS 深色后台，不浮夸） */
+    button, .tab, tr.row, .side-nav, .dp-copy, .td-act, .fc-chip, label.cc,
+    .gear-btn, .tb-more, .dd-item, .dd-menu .dd-item, .btn-ghost, th.filt .fcaret, .hdr-left img, .kwchip i, .ccitem, .kwitem, .ccitem i, .kwitem i {
+      transition: background-color .15s ease, border-color .15s ease, color .15s ease, opacity .15s ease; }
+    .hdr-left img { cursor:pointer; }
+    .hdr-left img:hover { opacity:.72; }
+    .btn-ghost:hover { background:var(--panel); }
+    .fc-chip:hover { border-color:var(--blue); color:#8fc7ff; }
+    label.cc:hover { border-color:var(--blue); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hdr-left"><img src="https://tejoy.com/static/tejoy-logo-white.png" alt="TEJOY" title="回今日待办首页" onclick="openToday()" style="height:22px;width:auto;display:block"></div>
+    <div class="hdr-right-zone">
+      <div class="hdr-actions">
+        <button id="btn-send" class="btn-green">群发开发信</button>
+        <button id="btn-replies">回复箱</button>
+        <button id="btn-dashboard" style="display:none">数据看板</button>
+        <div class="dd-wrap">
+          <button id="btn-more" class="tb-more">批量工具 ▾</button>
+          <div class="dd-menu" id="acq-more-dd">
+            <button id="btn-import" class="dd-item">导入 CSV</button>
+            <button id="btn-batch" class="dd-item">批量分析</button>
+            <button id="btn-findmail" class="dd-item">批量找邮箱</button>
+            <button id="btn-hunter" class="dd-item" title="对官网抓不到邮箱的公司，用 Hunter 按域名查（每家1积分）">🔑 Hunter 补邮箱</button>
+          </div>
+        </div>
+        <button id="btn-today" style="display:none">今日待办</button>
+        <button id="btn-discover" style="display:none">找客户</button>
+      </div>
+      <div class="hdr-right">
+        <input type="search" id="q" placeholder="搜索…" />
+        <div class="settings-menu">
+          <button id="btn-settings" class="gear-btn">⚙ 设置 ▾</button>
+          <div class="dd-menu" id="settings-dd">
+            <button id="btn-profile" class="dd-item">客户画像</button>
+            <button id="btn-sendcfg" class="dd-item">发信设置</button>
+            <button id="btn-notify" class="dd-item">🔔 飞书通知</button>
+            <div class="dd-sep"></div>
+            <div class="dd-static" id="whoami"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+  <div class="wrap">
+    <nav class="side" id="side"></nav>
+    <div class="main">
+      <div id="v-list">
+      <div class="filters">
+        <!-- 隐藏 select 作为筛选状态与选项数据源；表头 ▾ 菜单渲染自它们并驱动它们 -->
+        <span style="display:none">
+          <select id="f-country"><option value="">全部国家</option></select>
+          <select id="f-type"><option value="">全部分类</option></select>
+          <select id="f-email"><option value="">全部邮箱</option><option value="yes">有邮箱</option><option value="no">缺邮箱</option></select>
+          <select id="f-score"><option value="">全部评分</option></select>
+        </span>
+        <!-- 批③C：🔔待跟进 已移到左栏做独立视图；🔥最近参与 已删（与「已查看」格重复，排序保留在该格内部按 last_engaged_at）。
+             这两个的 handler 里写死 current="all" 会把用户踢回全部页，是"操作不清晰"的根源，一并删除。每页只留 重置筛选/重置列宽。 -->
+        <button id="f-reset" class="mini">重置筛选</button>
+        <button id="f-resetcol" class="mini" title="恢复默认列宽">↔ 重置列宽</button>
+        <span class="muted" id="active-filters" style="font-size:12px"></span>
+        <span class="muted" id="batch-status" style="margin-left:auto"></span>
+      </div>
+      <div id="hdrmenu" class="hdrmenu"></div>
+      <div id="hs-banner" class="hs-banner" style="display:none"></div>
+      <div id="bulk-bar" class="bulk-bar" style="display:none">
+        <span>已选 <b id="bulk-n">0</b> 条</span>
+        <button class="btn-green mini" onclick="bulkStatus('approved','批准')">批准</button>
+        <button class="btn-amber mini" onclick="bulkStatus('ignored','忽略')">忽略</button>
+        <button class="btn-red mini" onclick="bulkStatus('blacklisted','加黑名单')">加黑</button>
+        <button class="mini" onclick="bulkAnalyze()">重新分析</button>
+        <button class="mini" onclick="clearSel()">取消</button>
+        <span class="hint" id="bulk-msg"></span>
+      </div>
+      <table>
+        <thead><tr><th><input type="checkbox" id="sel-all" title="全选当前筛选" onclick="event.stopPropagation();toggleSelAll(this.checked)"> 公司</th><th>评分</th><th>阶段</th><th>邮箱</th><th>分类</th><th>国家</th><th class="chcol">LinkedIn</th><th class="chcol">WhatsApp</th><th class="chcol">Facebook</th><th class="chcol">Instagram</th><th class="chcol">电话</th><th>录入时间</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" style="display:none">暂无数据。点左栏「🎯 找客户」开始，或「批量工具 → 导入 CSV」加线索。</div>
+      </div>
+      <div id="v-page" style="display:none"></div>
+      <div id="v-found" style="display:none">
+        <div class="pg-head"><button class="btn-ghost" onclick="showMainView('list')">← 返回列表</button><div class="pg-titlewrap"><span class="pg-title">🔍 找客户</span><span class="pg-sub">免费目录源优先 · 关键词搜索兜底 · 统一 AI 打分</span></div></div>
+
+        <!-- 1) 客户画像·打分标准（全局，不折叠，第一块） -->
+        <div class="fc-card">
+          <div class="sec-title">① 客户画像 · 打分标准（全局）</div>
+          <div class="hint" style="margin:3px 0 8px">所有来源（🔍关键词搜索 / 🚢NMEA / 🚐RV）抓来的线索，都用这份画像给 AI 打分——越具体越准。</div>
+          <textarea id="fc-profile" placeholder="描述你的理想客户；留空用内置默认画像"></textarea>
+        </div>
+
+        <!-- 2) 免费目录源（推荐·零成本，提到关键词搜索之前） -->
+        <div class="fc-card">
+          <div class="sec-title">🆓 免费目录源 <span class="fc-badge fc-badge-free">推荐 · 零成本</span></div>
+          <div class="hint" style="margin:4px 0 10px">从公开行业会员目录抓真实经销/安装商，<b>不花任何 Serper 积分、质量高</b>；抓完自动去重、进「待分析」等打分。</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <button id="fc-nmea" class="primary">🚢 抓取 NMEA 船舶经销商目录</button>
+            <button id="fc-rvtito">🚐 抓取 rvwithtito RV 安装商</button>
+            <span class="hint" id="fc-free-msg"></span>
+          </div>
+          <div class="prog-log" id="fc-free-log" style="margin-top:8px;display:none"></div>
+          <div id="fc-free-result" style="margin-top:8px"></div>
+        </div>
+
+        <!-- 3) 关键词搜索（花 Serper 积分）：手动·跑一次 + 自动·后台 -->
+        <div class="fc-card">
+          <div class="sec-title">🔍 关键词搜索 <span class="fc-badge fc-badge-cost">花 Serper 积分</span></div>
+
+          <div class="fc-subhead">手动 · 跑一次</div>
+          <div class="sec-row"><span class="sec-title">目标国家</span>
+            <span class="sec-tools"><button class="mini" type="button" onclick="fcCountryAll(true)">全选</button><button class="mini" type="button" onclick="fcCountryAll(false)">全不选</button><button class="mini" type="button" id="fc-cc-manage" onclick="fcToggleManage('cc')">管理</button></span></div>
+          <div class="cc-grid" id="dp-countries"></div>
+          <div id="fc-cc-editrow" style="display:none;gap:8px;margin-top:7px;align-items:center;flex-wrap:wrap">
+            <select id="fc-cc-add" class="fc-add-sel"><option value="">＋ 添加国家…</option></select>
+            <span class="hint">只能从带搜索定向（gl 码）的清单里加，保证能搜到。</span>
+          </div>
+          <div class="sec-row"><span class="sec-title">关键词</span>
+            <span class="sec-tools"><button class="mini" type="button" onclick="fcKwAll(true)">全选</button><button class="mini" type="button" onclick="fcKwAll(false)">全不选</button><button class="mini" type="button" id="fc-kw-manage" onclick="fcToggleManage('kw')">管理</button></span></div>
+          <div id="dp-kwlist" style="margin:6px 0"></div>
+          <div id="fc-kw-editrow" style="display:none;gap:8px;margin-top:6px">
+            <input id="dp-kwnew" class="inlinput" placeholder="新增关键词，如 marine Starlink installer">
+            <button id="dp-kwadd" class="primary">添加</button>
+            <button id="dp-kwseed">载入默认</button>
+          </div>
+          <div class="sec-title" style="margin-top:12px">本次条数：<b id="fc-perkw-val">10</b> 条 / 关键词 / 国家（1–100）</div>
+          <input id="dp-perkw" type="range" min="1" max="100" step="1" value="10" style="width:280px;max-width:100%">
+          <div class="transparency" id="dp-transparency" style="margin-top:8px"></div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px">
+            <button id="dp-run" class="primary fc-cta">▶ 开始找客户</button>
+            <button id="dp-searchonly">仅搜索（不分析）</button>
+            <span class="hint" id="dp-msg"></span>
+          </div>
+          <div class="hint" style="margin-top:6px">「开始找客户」= 搜索 → AI 分析打分写信 → 补邮箱，逐步进行；量大时先处理一部分。</div>
+
+          <div class="fc-subhead" style="margin-top:18px">自动 · 后台每 6 小时</div>
+          <label style="display:flex;align-items:center;gap:7px;margin-top:6px;cursor:pointer;font-size:13px">
+            <input type="checkbox" id="dp-auto"> 开启后台每 6 小时自动搜索新客户
+            <span class="hint">（默认关；每轮只轮转跑一小批、受下方预算封顶）</span>
+          </label>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;font-size:13px">
+            <span>今日 Serper 已用 <b id="fc-serper-used">–</b> 次 / 预算上限</span>
+            <input id="fc-serper-budget" type="number" min="0" max="2500" step="10" style="width:84px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px">
+            <button id="fc-serper-save" class="mini">保存预算</button>
+            <span class="hint">次（到上限自动停，含手动+后台；防失控烧免费额度）</span>
+          </div>
+        </div>
+
+        <!-- 4) 保存配置（通用，底部） -->
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+          <button id="dp-save" class="primary">💾 保存配置</button>
+          <span class="hint">保存 国家/关键词清单 + 勾选 + 条数 + 自动开关 + 预算（后台自动搜索也用它）</span>
+          <span class="hint" id="dp-save-msg"></span>
+        </div>
+
+        <div class="fc-card" id="dp-progress" style="display:none;margin-top:12px">
+          <div class="k muted" style="margin-bottom:6px">运行进度</div>
+          <div class="prog-track"><div class="prog-bar" id="dp-bar"></div></div>
+          <div class="prog-log" id="dp-log"></div>
+          <div id="dp-result" style="margin-top:10px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 详情弹层 -->
+  <div class="overlay" id="detail-overlay">
+    <div class="modal detail-modal" id="detail"></div>
+  </div>
+
+  <!-- 找客户配置弹层 -->
+  <!-- 客户画像设置弹层 -->
+  <div class="overlay" id="profile-overlay">
+    <div class="modal">
+      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
+      <h2>客户画像（AI 打分 / 写信依据）</h2>
+      <p class="hint">描述你的理想客户。AI 会据此判断契合度并撰写开发信。留空则用内置默认画像。</p>
+      <textarea id="profile-input" style="min-height:220px"></textarea>
+      <div class="actions">
+        <button class="primary" id="save-profile">保存</button>
+        <button id="cancel-profile">取消</button>
+        <span class="hint" id="profile-result"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 回复箱弹层 -->
+  <div class="overlay" id="replies-overlay">
+    <div class="modal" style="width:min(760px,94vw)">
+      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
+      <h2>回复箱 <span class="hint" id="replies-count"></span></h2>
+      <p class="hint">客户对开发信的回复，自动匹配线索 + AI 分类。Cron 每 6 小时自动拉；也可手动拉取。</p>
+      <div class="actions" style="margin:10px 0">
+        <button class="primary" id="btn-fetch-replies">立即拉取新回复</button>
+        <span class="hint" id="fetch-replies-status"></span>
+      </div>
+      <div id="replies-list" style="max-height:56vh;overflow:auto"></div>
+      <div class="actions"><button id="cancel-replies">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 发信设置弹层 -->
+  <div class="overlay" id="sendcfg-overlay">
+    <div class="modal">
+      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
+      <h2>发信设置</h2>
+      <p class="hint">养域期建议每日上限从 10–20 起步，逐周提高。公司地址是冷邮件合规（CAN-SPAM）要求，会出现在每封信页脚，请填真实地址。</p>
+      <div class="kv" style="grid-template-columns:110px 1fr">
+        <div class="k">每日发信上限</div><div><input id="cfg-limit" type="number" min="1" max="500" style="width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
+        <div class="k">公司名</div><div><input id="cfg-company" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
+        <div class="k">官网</div><div><input id="cfg-website" placeholder="https://tejoy.com" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
+      </div>
+      <p class="hint" style="margin:2px 0 0">官网会出现在每封开发信页脚(如 tejoy.com),让收信人知道你们的正式网站。发件域名仍是 tejoy.net 不变。</p>
+      <div class="k muted">公司地址（合规必填）</div>
+      <textarea id="cfg-address" style="min-height:60px" placeholder="e.g. TEJOY, 123 Example St, City, Country"></textarea>
+
+      <div class="sec-title">⭐ 卖点 / 社会证明</div>
+      <p class="hint" style="margin:0 0 4px">AI 写开发信/跟进/回复时可引用的可信卖点（英文更佳，别夸大、别点名具体客户）。留空用内置默认。</p>
+      <textarea id="cfg-selling" style="min-height:70px" placeholder="e.g. Supplier behind many top-selling Amazon Starlink accessory listings; trusted by 100+ resellers; dropship-friendly wholesale pricing."></textarea>
+
+      <div class="sec-title">💬 一键开聊话术</div>
+      <p class="hint" style="margin:0 0 4px">详情弹层「一键开聊」按钮预填/复制的开场白（英文，用 {company} 占位公司名）。</p>
+      <textarea id="cfg-chatscript" style="min-height:64px" placeholder="Hi {company} team — TEJOY supplies wholesale Starlink accessories…"></textarea>
+
+      <div class="sec-title">🔁 无回复自动跟进</div>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:4px 0">
+        <input type="checkbox" id="fu-enabled"> 开启：发出去 N 天没回复，自动发第 2 封跟进信
+      </label>
+      <div class="kv" style="grid-template-columns:130px 1fr">
+        <div class="k">间隔天数</div><div><input id="fu-delay" type="number" min="1" max="60" class="fld"> <span class="hint">发出后几天没回复就跟进（建议 3-5）</span></div>
+        <div class="k">已参与跟进间隔</div><div><input id="fu-engaged-delay" type="number" min="1" max="60" class="fld"> <span class="hint">点过链接的线索多久跟进（更短更暖，建议 1-2 天）</span></div>
+        <div class="k">最多跟进次数</div><div><input id="fu-max" type="number" min="1" max="5" class="fld"> <span class="hint">每个客户最多跟进几次（建议 1-2）</span></div>
+      </div>
+      <p class="hint" style="margin:2px 0 0">跟进信由 AI 生成（简短礼貌），遵守每日发信上限。已回复/退订/退信的自动排除。Cron 每 6 小时自动跑一批。</p>
+
+      <div class="actions">
+        <button class="primary" id="save-sendcfg">保存</button>
+        <button id="cancel-sendcfg">取消</button>
+        <span class="hint" id="sendcfg-result"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 飞书通知设置弹层 -->
+  <div class="overlay" id="notify-overlay">
+    <div class="modal">
+      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
+      <h2>🔔 飞书群机器人通知</h2>
+      <p class="hint">在一个飞书群里 <b>群设置 → 群机器人 → 添加「自定义机器人」</b>，把它的 <b>Webhook 地址</b>发给管理员注入后即生效。之后：有客户「有意向/询价/投诉」回复会<b>实时</b>推到群里，每 6 小时来一条<b>简报</b>。</p>
+      <div id="notify-status" class="transparency" style="margin:12px 0"></div>
+      <div class="kv" style="grid-template-columns:130px 1fr">
+        <div class="k">启用通知</div><div><label style="cursor:pointer"><input type="checkbox" id="ntf-enabled"> 打开（关掉则不推任何消息）</label></div>
+        <div class="k">高分阈值</div><div><input id="ntf-score" type="number" min="0" max="100" class="fld"> <span class="hint">简报里“高分客户”按此分数（默认 80）</span></div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="ntf-save">保存</button>
+        <button class="btn-amber" id="ntf-test">发送测试卡片</button>
+        <button id="ntf-close">关闭</button>
+        <span class="hint" id="ntf-result"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 今日待办弹层 -->
+  <div class="overlay" id="today-overlay">
+    <div class="modal" id="today" style="width:min(820px,95vw)"></div>
+  </div>
+
+  <!-- 数据看板弹层 -->
+  <div class="overlay" id="dashboard-overlay">
+    <div class="modal" id="dashboard" style="width:min(940px,96vw)"></div>
+  </div>
+
+  <!-- 导入弹层 -->
+  <div class="overlay" id="import-overlay">
+    <div class="modal">
+      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
+      <h2>导入 CSV 线索</h2>
+      <p class="hint">支持表头（中英文皆可）：company/公司名、website/网站、email/邮箱、country/国家、keyword/关键词。按邮箱或网站自动去重。</p>
+      <textarea id="csv-input" placeholder="company,website,email,country,keyword&#10;Acme Starlink,acmestarlink.com,sales@acmestarlink.com,US,Starlink installer"></textarea>
+      <div class="actions">
+        <button class="primary" id="do-import">导入</button>
+        <button id="cancel-import">取消</button>
+        <span class="hint" id="import-result"></span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 左栏=竖向漏斗：全部(置顶·默认)→分隔线→ 待分析→待审批→待发送→已发送→已查看→已回复→已成交→已忽略→黑名单/退订。
+    // 批③B：补上「已忽略」格（后端 STATUS_GROUPS 早有 ignored 分组，只是前端没格子，线索成孤儿）。
+    const TABS = [
+      { key:"all", label:"全部" },
+      { key:"unscored", label:"待分析" },
+      { key:"review", label:"待审批" },
+      { key:"ready", label:"待发送" },
+      { key:"sent", label:"已发送" },
+      { key:"viewed", label:"已查看" },
+      { key:"replied", label:"已回复" },
+      { key:"won", label:"已成交" },
+      { key:"ignored", label:"已忽略" },
+      { key:"blacklisted", label:"黑名单/退订" },
+    ];
+    let current = "all";
+    let activeView = "list";   // #42 当前主视图：list/due/today/found/dashboard/detail —— 左栏高亮的唯一真源
+    let dueMode = false;       // 批③B 🔔待跟进独立视图：跨阶段只看"下一步日期已到/过期"（口径=原 f-due）
+    // 🔔待跟进：列表视图 + due=1 跨阶段筛选；左栏高亮在导航项而非漏斗格
+    window.openDue = () => { dueMode = true; current = "all"; showMainView('due'); loadStats(); loadList(); };
+    let query = "";
+
+    const $ = (s) => document.querySelector(s);
+    const statusLabel = { new:"未打分", analyzed:"已打分", pending:"待审核", approved:"已批准",
+      queued:"待发", sent:"已发送", replied:"已回复", no_reply:"无回复", unsubscribed:"已退订",
+      bounced:"退信", ignored:"已忽略", blacklisted:"黑名单", won:"已下单" };
+
+    // 国家代码 → 中文（与后端 discover.ts COUNTRIES 对应）
+    const COUNTRY_NAMES = { US:"美国", CA:"加拿大", AU:"澳大利亚", GB:"英国", IE:"爱尔兰", NZ:"新西兰",
+      NG:"尼日利亚", KE:"肯尼亚", ZW:"津巴布韦", ZA:"南非", VN:"越南", ID:"印尼", LK:"斯里兰卡",
+      DE:"德国", FR:"法国", NL:"荷兰", ES:"西班牙", IT:"意大利", MX:"墨西哥", BR:"巴西",
+      AE:"阿联酋", SG:"新加坡", PH:"菲律宾", AR:"阿根廷", CL:"智利", CO:"哥伦比亚", PE:"秘鲁",
+      TR:"土耳其", MT:"马耳他", GR:"希腊", VG:"英属维尔京群岛" };
+    // 录入时间精简格式：UTC "YYYY-MM-DD HH:MM:SS" → "MM-DD HH:MM"
+    function fmtDate(s){ if(!s) return "—";
+      const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+      return m ? `${m[2]}-${m[3]} ${m[4]}:${m[5]}` : String(s).slice(5,16); }
+    // 状态徽章：sent 且有已发跟进信 → 显示「跟进中」
+    function statusPill(l){
+      if (l.status==='sent' && l.has_followup) return `<span class="pill s-followup">跟进中</span>`;
+      return `<span class="pill s-${l.status}">${statusLabel[l.status]||l.status}</span>`;
+    }
+    // 销售漏斗阶段 + 下一步（从 status + 最新回复类别 + 参与 派生）
+    function stageOf(l){
+      const s = l.status;
+      if (s==='blacklisted') return { badge:"⛔ 黑名单", cls:"st-bad", next:"停联系" };
+      if (s==='unsubscribed') return { badge:"🚫 已退订", cls:"st-bad", next:"停联系" };
+      if (s==='bounced') return { badge:"↩️ 退信", cls:"st-bad", next:"换邮箱或弃" };
+      if (s==='won') return { badge:"🤝 合作中", cls:"st-won", next:"维护、促复购" };
+      if (s==='replied'){
+        if (l.latest_reply_cat==='not_interested') return { badge:"❌ 已婉拒", cls:"st-mute", next:"归档/忽略" };
+        return { badge:"💬 洽谈中", cls:"st-talk", next:"回报价、问型号数量→推进" };
+      }
+      if (s==='sent'){
+        if (l.has_click || l.has_open) return { badge:"🔥 已参与", cls:"st-hot", next:"趁热跟进（TA 看了/点了）" };
+        return { badge:"✅ 已发信", cls:"st-sent", next:"等回复；到期自动跟进" };
+      }
+      if (s==='approved' || s==='queued') return { badge:"📤 待发送", cls:"st-send", next:'点"发送已批准"' };
+      return { badge:"🆕 待审核", cls:"st-new", next:"审核→批准发送" }; // new/analyzed/pending 及其它
+    }
+    // 联系渠道（快赢①）：把 leads.channels JSON 渲染成可点击链接
+    const CHANNEL_META = { linkedin:{icon:"💼",label:"LinkedIn"}, whatsapp:{icon:"🟢",label:"WhatsApp"},
+      facebook:{icon:"📘",label:"Facebook"}, instagram:{icon:"📷",label:"Instagram"},
+      telegram:{icon:"✈️",label:"Telegram"}, youtube:{icon:"▶️",label:"YouTube"}, phone:{icon:"📞",label:"电话"} };
+    function channelsHtml(channelsJson){
+      let ch={}; try { ch = channelsJson ? JSON.parse(channelsJson) : {}; } catch {}
+      const order=["whatsapp","phone","linkedin","facebook","instagram","youtube","telegram"];
+      const items=order.filter(k=>ch[k]).map(k=>{
+        const meta=CHANNEL_META[k];
+        const href = k==="phone" ? `tel:${ch[k]}` : ch[k];
+        const shown = k==="phone" ? esc(ch[k]) : meta.label;
+        return `<a class="chan chan-${k}" href="${esc(href)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${meta.icon} ${shown}</a>`;
+      });
+      return items.length ? `<div class="chan-row">${items.join("")}</div>` : "";
+    }
+    // 列表用：紧凑渠道图标（仅 emoji 可点，省空间）
+    function channelsInline(channelsJson){
+      let ch={}; try { ch = channelsJson ? JSON.parse(channelsJson) : {}; } catch {}
+      const order=["linkedin","whatsapp","telegram","facebook","instagram","youtube","phone"];
+      const items=order.filter(k=>ch[k]).map(k=>{
+        const meta=CHANNEL_META[k];
+        const href = k==="phone" ? `tel:${ch[k]}` : ch[k];
+        return `<a href="${esc(href)}" target="_blank" rel="noopener" title="${meta.label}${k==="phone"?"："+esc(ch[k]):""}" onclick="event.stopPropagation()" style="text-decoration:none;margin-right:3px">${meta.icon}</a>`;
+      });
+      return items.length ? `<span style="margin-left:2px;white-space:nowrap">${items.join("")}</span>` : "";
+    }
+    // ===== 一键开聊（click-to-chat deep link，纯前端，无自动发送/API）=====
+    const DEFAULT_CHAT = "Hi {company} team — TEJOY supplies wholesale Starlink accessories (mounts, cables, enclosures, power kits) to dealers & installers. May I send you our dealer price list?";
+    let _chatScript = DEFAULT_CHAT;
+    function buildChatMsg(company){ return (_chatScript||DEFAULT_CHAT).replace(/\{company\}/g, (company||"there").trim()||"there"); }
+    // 从 whatsapp 链接或 phone 提取纯数字号（wa.me 需纯数字，去 + 空格 括号 -）
+    function waNumber(ch){
+      const src = ch.whatsapp || ch.phone || "";
+      const m = String(src).match(/(?:wa\.me\/|phone=)?\+?([0-9][0-9 .()\-]{6,})/);
+      const digits = (m ? m[1] : String(src)).replace(/\D/g, "");
+      return digits.length >= 7 ? digits : "";
+    }
+    function waLink(digits, company){ return `https://wa.me/${digits}?text=${encodeURIComponent(buildChatMsg(company))}`; }
+    // 复制话术到剪贴板（company 从 data 属性读，避免 onclick 参数注入）
+    // 复制任意文本到剪贴板（详情整页联系方式旁的「复制」小按钮）
+    window.copyVal = async (btn) => {
+      const t = btn.getAttribute('data-copy') || '';
+      try { await navigator.clipboard.writeText(t); }
+      catch { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy");}catch{} ta.remove(); }
+      const o = btn.textContent; btn.textContent = "✅"; setTimeout(()=>{ btn.textContent = o; }, 1200);
+    };
+    window.copyScript = async (btn) => {
+      const msg = buildChatMsg(btn.dataset.company || "");
+      try { await navigator.clipboard.writeText(msg); }
+      catch { const ta=document.createElement("textarea"); ta.value=msg; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy");}catch{} ta.remove(); }
+      const t = btn.textContent; btn.textContent = "✅ 已复制"; setTimeout(()=>{ btn.textContent = t; }, 1500);
+    };
+
+    // 从渠道 URL 提取"账号标识"（handle/号/slug）；取不到→host+path 兜底。account 文本来自抓取=不可信，渲染时 esc()。
+    function chHostPath(u){ try { const x=new URL(u); return (x.hostname.replace(/^www\./,"")+x.pathname).replace(/\/+$/,""); } catch { return String(u||"").replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/+$/,""); } }
+    function channelAccount(key, url){
+      const u = String(url||""); let m;
+      if (key==="phone") return u;
+      if (key==="whatsapp") { m = u.match(/wa\.me\/\+?(\d+)/i) || u.match(/[?&]phone=\+?(\d+)/i); return m ? m[1] : chHostPath(u); }
+      if (key==="linkedin") { m = u.match(/linkedin\.com\/(?:company|in|pub|school)\/([^\/?#]+)/i); return m ? decodeURIComponent(m[1]) : chHostPath(u); }
+      if (key==="facebook") { m = u.match(/(?:facebook\.com|fb\.com)\/([^\/?#]+)/i); return m ? decodeURIComponent(m[1]) : chHostPath(u); }
+      if (key==="instagram") { m = u.match(/instagram\.com\/([^\/?#]+)/i); return m ? decodeURIComponent(m[1]) : chHostPath(u); }
+      return chHostPath(u);
+    }
+    // 单个渠道独立列单元格：存在→显账号标识(可点开完整链接)，不存在→空白（WhatsApp 保留 #2 预填话术深链）
+    function chanCell(channelsJson, key, company){
+      let ch={}; try { ch = channelsJson ? JSON.parse(channelsJson) : {}; } catch {}
+      if (!ch[key]) return `<td class="chcol"></td>`;
+      const meta = CHANNEL_META[key];
+      let href = ch[key];
+      if (key==="phone") href = `tel:${ch[key]}`;
+      else if (key==="whatsapp") { const d=waNumber(ch); href = d ? waLink(d, company) : ch[key]; }
+      const acct = channelAccount(key, ch[key]);
+      return `<td class="chcol"><a class="chacct" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(meta.label)}：${esc(acct)}${key==="whatsapp"?"（点开预填话术）":""}" onclick="event.stopPropagation()">${esc(acct)}</a></td>`;
+    }
+    // 该跟进：next_action_date 已到/过期
+    function isDue(l){ return !!(l.next_action_date && l.next_action_date <= new Date().toISOString().slice(0,10)); }
+    function flag(cc){ cc=(cc||"").toUpperCase(); if(!/^[A-Z]{2}$/.test(cc)) return "🏳️";
+      return String.fromCodePoint(...[...cc].map(c=>127397+c.charCodeAt(0))); }
+    function countryName(cc){ return COUNTRY_NAMES[(cc||"").toUpperCase()] || cc; }
+    function hostOf(u){ try { return new URL(u).hostname.replace(/^www\./,""); } catch { return (u||"").replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/.*$/,""); } }
+
+    async function loadStats() {
+      const s = await fetch("/api/stats").then(r=>r.json());
+      const bs = s.byStatus || {};
+      const groupCount = { unscored:0, review:0, ready:0, sent:0, replied:0, won:0, ignored:0, blacklisted:0, all:s.total };
+      const map = { new:"unscored",analyzed:"review",pending:"review",approved:"ready",
+        queued:"ready",sent:"sent",replied:"replied",won:"won",ignored:"ignored",
+        blacklisted:"blacklisted",unsubscribed:"blacklisted",bounced:"blacklisted" };
+      for (const [st,n] of Object.entries(bs)) if (map[st]) groupCount[map[st]] += n;
+      groupCount.viewed = s.viewed || 0;                                        // #39 已查看 = sent 且有点击
+      groupCount.sent = Math.max(0, (groupCount.sent||0) - groupCount.viewed);  // 已发送 = sent 总 − 已查看（互斥）
+      { const sb = $("#btn-send"); if (sb) sb.textContent = `群发开发信 (${groupCount.ready||0})`; }  // 群发按钮带待发送计数
+      // 侧栏顶部：📋今日待办 + 🎯找客户（导航项，点击复用现有隐藏按钮 handler）；下方=竖向漏斗
+      const tabHtml = t => `<div class="tab ${t.key===current?"active":""}" data-k="${t.key}">${t.label} <span class="cnt">(${groupCount[t.key]??0})</span></div>`;
+      const chain = TABS.slice(1);
+      // 批③B 顶部导航：待办事项(原今日待办改名) / 找客户 / 数据看板 / 🔔待跟进(独立视图，口径=原 f-due 跨阶段)
+      const navTop = `<div class="side-nav" data-nav="today" onclick="document.getElementById('btn-today').click()">📋 待办事项</div>`
+        + `<div class="side-nav" data-nav="found" onclick="document.getElementById('btn-discover').click()">🎯 找客户</div>`
+        + `<div class="side-nav" data-nav="dashboard" onclick="document.getElementById('btn-dashboard').click()">📊 数据看板</div>`
+        + `<div class="side-nav" data-nav="due" onclick="openDue()">🔔 待跟进</div>`
+        + `<div class="side-div"></div>`;
+      $("#side").innerHTML = navTop + tabHtml(TABS[0]) + `<div class="side-div"></div>` +
+        chain.map((t,i) => tabHtml(t) + (i < chain.length - 1 ? `<div class="side-arrow">↓</div>` : "")).join("");
+      document.querySelectorAll(".tab").forEach(el =>
+        el.onclick = () => { current = el.dataset.k; dueMode = false; showMainView('list'); loadStats(); loadList(); });   // 点漏斗格=退出待跟进视图
+      refreshNavHighlight();   // #42 侧栏重渲后校正高亮（跟随 activeView，而非只看 current）
+      loadHighScoreBanner();
+    }
+    // #42 左栏高亮唯一真源：视图=某导航页→点亮该 side-nav 并清空漏斗 active；视图=列表/详情→点亮 current 漏斗 tab、清空 side-nav
+    function refreshNavHighlight(){
+      const onList = (activeView === "list" || activeView === "detail");
+      document.querySelectorAll(".side-nav").forEach(el =>
+        el.classList.toggle("active", !onList && el.dataset.nav === activeView));
+      document.querySelectorAll(".tab").forEach(el =>
+        el.classList.toggle("active", onList && el.dataset.k === current));
+    }
+    // 跳到某个漏斗分组并回列表（找客户跑完「查看这批 →」复用）
+    window.gotoGroup = (k) => { current = k; showMainView('list'); loadStats(); loadList(); };
+
+    // A3 高分待发横幅：≥70分·已打分·有邮箱·未压制 的数量 + 「批量批准 Top N」（不自动发）
+    async function loadHighScoreBanner(){
+      const el = $("#hs-banner"); if (!el) return;
+      const d = await fetch("/api/high-score-ready").then(r=>r.json()).catch(()=>({count:0}));
+      const n = d.count || 0;
+      if (!n) { el.style.display = "none"; el.innerHTML = ""; return; }
+      el.style.display = "flex";
+      el.innerHTML = `<span>🎯 你有 <b>${n}</b> 个高分客户可发送（≥70分 · 已打分 · 有邮箱 · 未压制）</span>` +
+        `<button class="btn-green" id="hs-approve">批量批准 Top ${n}</button><span class="hint" id="hs-msg"></span>`;
+      $("#hs-approve").onclick = async () => {
+        if (!(await uiConfirm({ title:'批量批准高分线索', body:`把这 ${n} 个高分线索批量置为「已批准」？\n（不自动发送；发送仍走「发送已批准」按每日上限）`, confirmText:'批量批准' }))) return;
+        $("#hs-approve").disabled = true; $("#hs-msg").textContent = "批准中…";
+        const r = await fetch("/api/high-score-ready/approve", { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+        $("#hs-msg").textContent = r.error ? ("失败："+r.error) : `✅ 已批准 ${r.approved} 个`;
+        loadStats(); loadList(); loadFacets();
+      };
+    }
+
+    // 筛选参数（tab 分组 + 搜索 + 国家/类型/邮箱/评分）
+    function filterQuery() {
+      const p = new URLSearchParams();
+      p.set("group", current);
+      if (query) p.set("q", query);
+      const c = $("#f-country").value; if (c) p.set("country", c);
+      const t = $("#f-type").value; if (t) p.set("category", t);
+      const e = $("#f-email").value; if (e) p.set("hasEmail", e);
+      const sc = $("#f-score").value;
+      if (sc) { const [lo,hi] = sc.split("-").map(Number); p.set("scoreMin", String(lo)); p.set("scoreMax", String(hi>=100?101:hi)); }
+      if (hf.stage) p.set("stage", hf.stage);
+      if (hf.ch) p.set("hasChannel", hf.ch);
+      if (dueMode) p.set("due","1");   // 批③B 待跟进独立视图（原 f-due 全局工具栏开关已删）
+      if (sortMode) p.set("sort", sortMode);   // '' = 后端默认(按价值/评分降序)；'score_asc' / 'engaged'
+      return p.toString();
+    }
+    // 表头内置筛选状态（阶段/渠道为新增；国家/分类/邮箱/评分复用隐藏 select）
+    const hf = { stage:"", ch:"" };
+    // A1 排序模式：'' 默认按价值(评分降序) / 'score_asc' 评分升序 / 'engaged' 最近参与（互斥）
+    let sortMode = "";
+    // B1 多选状态（存字符串 id）；_loadedIds = 当前已加载行 id，用于"全选当前"
+    const selectedIds = new Set(); let _loadedIds = [];
+    window.toggleSel = (id, checked) => { const s=String(id); if(checked) selectedIds.add(s); else selectedIds.delete(s); refreshBulkBar(); syncSelAll(); };
+    window.toggleSelAll = (checked) => { _loadedIds.forEach(id => { if(checked) selectedIds.add(id); else selectedIds.delete(id); }); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=checked); refreshBulkBar(); };
+    window.clearSel = () => { selectedIds.clear(); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=false); const sa=$("#sel-all"); if(sa)sa.checked=false; refreshBulkBar(); };
+    function syncSelAll(){ const sa=$("#sel-all"); if(!sa) return; sa.checked = _loadedIds.length>0 && _loadedIds.every(id=>selectedIds.has(id)); }
+    function refreshBulkBar(){ const bar=$("#bulk-bar"); if(!bar) return; const n=selectedIds.size; const bn=$("#bulk-n"); if(bn)bn.textContent=n; bar.style.display = n? "flex":"none"; }
+    window.bulkStatus = async (status, label) => {
+      const ids=[...selectedIds].map(Number); if(!ids.length) return;
+      if(!(await uiConfirm({ title:`批量「${label}」`, body:`把选中的 ${ids.length} 条批量「${label}」？\n（退订/黑名单/退信等不可违规复发的会自动跳过，不整批失败）`, confirmText:label, danger:(label==='加黑名单') }))) return;
+      $("#bulk-msg").textContent="处理中…";
+      const r=await fetch("/api/leads/bulk-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ids,status})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if(r.error){ $("#bulk-msg").textContent="失败: "+r.error; return; }
+      $("#bulk-msg").textContent=`✅ 更新 ${r.updated}${(r.skipped&&r.skipped.length)?`，跳过 ${r.skipped.length}`:""}`;
+      clearSel(); loadStats(); loadList(); loadFacets();
+    };
+    window.bulkAnalyze = async () => {
+      const ids=[...selectedIds].map(Number); if(!ids.length) return;
+      const N = ids.length;
+      if(!(await uiConfirm({ title:'批量重新分析', body:`对选中的 ${N} 条重新 AI 分析？（逐条抓官网+打分+写信，约每条 10-30 秒）`, confirmText:'开始分析' }))) return;
+      const bar=$("#bulk-bar"), msg=$("#bulk-msg");
+      // 立刻切"分析中"态：醒目色 + 禁用按钮 + 进度条 0/N（别等第一条完成才有反馈）
+      bar.classList.add("analyzing");
+      bar.querySelectorAll("button").forEach(b=>b.disabled=true);
+      const prog = pct => `⏳ 已分析 <b>${pct}</b>/${N}（约每条 10-30 秒，请稍候）<span class="bulk-prog"><span class="bulk-prog-fill" style="width:${Math.round(pct/N*100)}%"></span></span>`;
+      msg.innerHTML = prog(0).replace("已分析","开始分析");
+      let ok=0, fail=0;
+      for(let i=0;i<N;i++){
+        const r=await fetch(`/api/leads/${ids[i]}/analyze`,{method:"POST"}).then(r=>r.json()).catch(e=>({error:String(e)}));
+        if(r && !r.error && r.ok!==false) ok++; else fail++;
+        msg.innerHTML = prog(i+1);
+      }
+      bar.classList.remove("analyzing");
+      const s=$("#batch-status"); if(s) s.textContent = `✅ 批量分析完成：已分析 ${N} 条${fail?`（失败 ${fail}）`:""}`;
+      clearSel(); loadStats(); loadList(); loadFacets();
+    };
+    function toggleScoreSort(){
+      // 批③C：原「最近参与」互斥逻辑已随该按钮删除
+      sortMode = (sortMode === "score_asc") ? "" : "score_asc"; // '' 即默认评分降序
+      loadList();
+    }
+
+    async function loadFacets() {
+      const f = await fetch("/api/leads/facets").then(r=>r.json()).catch(()=>({countries:[],allCountries:{},categories:[],noEmailCount:0,withEmailCount:0,total:0,scoreBuckets:{}}));
+      // 国家：全部目标国家都显数量（含 0）
+      const cSel = $("#f-country"), cur = cSel.value;
+      const cnt = {}; (f.countries||[]).forEach(c=>{ cnt[String(c.v).toUpperCase()] = c.n; });
+      const seen = new Set();
+      let opts = `<option value="">全部国家</option>`;
+      for (const [code,name] of Object.entries(f.allCountries||{})) {
+        const CC = code.toUpperCase(); seen.add(CC);
+        opts += `<option value="${CC}">${esc(name)} (${cnt[CC]||0})</option>`;
+      }
+      // 数据里出现、但不在目标国家清单里的（如 CSV 导入的其它国家）也补进去；用中文名，查不到显原值
+      (f.countries||[]).forEach(c=>{ const CC=String(c.v).toUpperCase(); if(!seen.has(CC)) opts += `<option value="${CC}">${esc(countryName(c.v))} (${c.n})</option>`; });
+      cSel.innerHTML = opts;
+      cSel.value = cur;
+      // 分类
+      const tSel = $("#f-type"), tcur = tSel.value;
+      tSel.innerHTML = `<option value="">全部分类</option>` +
+        (f.categories||[]).map(t=>`<option value="${esc(t.v)}">${esc(t.v)} (${t.n})</option>`).join("");
+      tSel.value = tcur;
+      // 邮箱：三项都带数量
+      const eSel = $("#f-email"), ecur = eSel.value;
+      eSel.innerHTML =
+        `<option value="">全部邮箱 (${f.total||0})</option>` +
+        `<option value="yes">有邮箱 (${f.withEmailCount||0})</option>` +
+        `<option value="no">缺邮箱 (${f.noEmailCount||0})</option>`;
+      eSel.value = ecur;
+      // 评分分桶（0-40 / 40-70 / 70-100），各带数量
+      const sb = f.scoreBuckets||{};
+      const sSel = $("#f-score"), scur = sSel.value;
+      sSel.innerHTML =
+        `<option value="">全部评分</option>` +
+        `<option value="70-100">70-100分 (${sb.b70_100||0})</option>` +
+        `<option value="40-70">40-70分 (${sb.b40_70||0})</option>` +
+        `<option value="0-40">0-40分 (${sb.b0_40||0})</option>`;
+      sSel.value = scur;
+    }
+
+    async function loadList() {
+      const { leads } = await fetch(`/api/leads?${filterQuery()}`).then(r=>r.json());
+      $("#empty").style.display = leads.length ? "none" : "block";
+      _loadedIds = leads.map(l => String(l.id));
+      // 小修：列表每次 reload 后把已选与当前结果集求交集——去掉不在当前筛选/分组可见集里的 id，
+      // 让"已选N条"与批量操作永远=当前可见的选中项（无分页，全量加载，交集剪枝安全）。
+      { const visible = new Set(_loadedIds); for (const id of [...selectedIds]) if (!visible.has(id)) selectedIds.delete(id); }
+      // 阶段列取代原公司名旁的状态徽章（更信息量：漏斗阶段+下一步）；保留 🔔待跟进 + 🔥/👀参与标记
+      $("#rows").innerHTML = leads.map(l => { const stg = stageOf(l); return `
+        <tr class="row" data-id="${l.id}">
+          <td><div style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="rowchk" ${selectedIds.has(String(l.id))?'checked':''} onclick="event.stopPropagation()" onchange="toggleSel(${l.id},this.checked)"><div class="co-name" title="${esc(l.company_name)||''}">${isDue(l)?`<span class="due-flag" title="该跟进了：${esc(l.next_action)||''} (${esc(l.next_action_date)})">🔔 </span>`:""}${esc(l.company_name)||"<span class='muted'>—</span>"}${l.has_click?`<span title="点击过开发信（强意向）" style="margin-left:4px">🔥</span>`:(l.has_open?`<span title="打开过开发信" style="margin-left:4px">👀</span>`:"")}</div></div>${l.website?`<a class="wsite" href="${esc(l.website)}" target="_blank" onclick="event.stopPropagation()" style="margin-left:22px">${esc(hostOf(l.website))}</a>`:""}</td>
+          <td>${scoreBadge(l.match_score)}</td>
+          <td><span class="stg ${stg.cls}">${stg.badge}</span></td>
+          <td>${l.email?esc(l.email):"<span class='miss'>缺邮箱</span>"}</td>
+          <td>${l.customer_category?`<span class="pill ptype" title="${esc(l.customer_type)||''}">${esc(l.customer_category)}</span>`:"<span class='muted'>—</span>"}</td>
+          <td>${l.country?esc(countryName(l.country)):"<span class='muted'>—</span>"}</td>
+          ${chanCell(l.channels,'linkedin',l.company_name)}${chanCell(l.channels,'whatsapp',l.company_name)}${chanCell(l.channels,'facebook',l.company_name)}${chanCell(l.channels,'instagram',l.company_name)}${chanCell(l.channels,'phone',l.company_name)}
+          <td class="muted" style="white-space:nowrap;font-size:12px">${fmtDate(l.created_at)}</td>
+        </tr>`; }).join("");
+      document.querySelectorAll("tr.row").forEach(tr =>
+        tr.onclick = () => openDetail(tr.dataset.id));
+      makeColumnsResizable();
+      buildHeaderFilters();
+      refreshHeaderActive();
+      refreshBulkBar(); syncSelAll();
+    }
+
+    // ===== 表头内置筛选下拉 =====
+    const STAGE_OPTS = [["","全部阶段"],["new","🆕 待审核"],["approved","📤 待发送"],["sent","✅ 已发信"],["engaged","🔥 已参与"],["talking","💬 洽谈中"],["declined","❌ 已婉拒"],["won","🤝 合作中"],["dead","⛔ 黑名单/退订/退信"]];
+    const CH_COLS = { ch_linkedin:["linkedin","LinkedIn"], ch_whatsapp:["whatsapp","WhatsApp"], ch_facebook:["facebook","Facebook"], ch_instagram:["instagram","Instagram"], ch_phone:["phone","电话"] };
+    // 统一「漏斗=筛选」图标（Feather filter，与排序三角 ▲/▼ 明显不同形）
+    const FUNNEL_SVG = `<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="21 4 3 4 10 12.5 10 19 14 21 14 12.5"/></svg>`;
+    const FILT_COL = { 1:"score", 2:"stage", 3:"email", 4:"category", 5:"country", 6:"ch_linkedin", 7:"ch_whatsapp", 8:"ch_facebook", 9:"ch_instagram", 10:"ch_phone" };  // 阶段列筛选恢复：与左栏漏斗互补——漏斗快切状态、阶段列多维交叉精筛，可叠加 国家/分类/邮箱/评分(AND)
+    const SEL_OF = { country:"f-country", category:"f-type", email:"f-email", score:"f-score" };
+    function buildHeaderFilters(){
+      const table = document.querySelector(".main table"); if (!table || table.dataset.hfbuilt) return;
+      table.dataset.hfbuilt = "1";
+      [...table.querySelectorAll("thead th")].forEach((th,i) => {
+        const type = FILT_COL[i]; if (!type) return;
+        th.classList.add("filt");
+        if (type === "score") { const sa=document.createElement("span"); sa.className="sortarrow"; th.appendChild(sa); } // A1 排序指示（▲/▼ 贴文字后）
+        const car = document.createElement("span"); car.className = "fcaret" + (type==="score" ? " fcaret-score" : ""); car.innerHTML = FUNNEL_SVG; car.title = "筛选"; th.appendChild(car);
+        th.addEventListener("click", e => {
+          if (e.target.classList && e.target.classList.contains("col-resizer")) return;
+          const onCaret = e.target.closest && e.target.closest(".fcaret");   // 点漏斗(含内部 svg)=筛选
+          e.stopPropagation();
+          if (type === "score" && !onCaret) { toggleScoreSort(); return; } // 评分列：点文字/▲▼=排序，漏斗=分桶筛选
+          openHdrMenu(th, type);
+        });
+      });
+    }
+    function hdrGet(type){
+      if (type==="stage") return hf.stage;
+      if (type in CH_COLS) return hf.ch===CH_COLS[type][0] ? CH_COLS[type][0] : "";
+      return $("#"+SEL_OF[type]).value;
+    }
+    function hdrOpts(type){
+      if (type==="stage") return STAGE_OPTS.slice();
+      if (type in CH_COLS){ const [k,name]=CH_COLS[type]; return [["","全部"],[k,"有 "+name]]; }
+      return [...$("#"+SEL_OF[type]).options].map(o=>[o.value, o.text]);
+    }
+    let _menuTh = null;
+    function openHdrMenu(th, type){
+      const menu = $("#hdrmenu");
+      if (_menuTh===th && menu.classList.contains("show")) { closeHdrMenu(); return; }
+      _menuTh = th;
+      const cur = hdrGet(type);
+      menu.innerHTML = hdrOpts(type).map(([v,l]) => `<div class="mi ${v===cur?'sel':''}" data-v="${esc(v)}">${esc(l)}${v===cur?'<span class="cnt">✓</span>':''}</div>`).join("");
+      menu.querySelectorAll(".mi").forEach(mi => mi.onclick = () => { applyHdrFilter(type, mi.dataset.v); closeHdrMenu(); });
+      const r = th.getBoundingClientRect();
+      menu.style.left = Math.max(6, Math.min(r.left, window.innerWidth-176)) + "px";
+      menu.style.top = (r.bottom+2) + "px";
+      menu.classList.add("show");
+    }
+    function closeHdrMenu(){ $("#hdrmenu").classList.remove("show"); _menuTh=null; }
+    function applyHdrFilter(type, v){
+      if (type==="stage"){
+        hf.stage = v;
+        // 阶段是按 status 派生，与侧栏 status 分组会冲突 → 选阶段时切到「全部」跨状态
+        if (v && current !== "all") { current = "all"; loadStats(); }
+      }
+      else if (type in CH_COLS) hf.ch = v;   // v = 渠道 key 或 ""
+      else $("#"+SEL_OF[type]).value = v;
+      loadList();                            // loadList 内会 refreshHeaderActive
+    }
+    function refreshHeaderActive(){
+      const table = document.querySelector(".main table"); if (!table) return;
+      [...table.querySelectorAll("thead th")].forEach((th,i) => {
+        const type = FILT_COL[i]; if (!type) return;
+        th.classList.toggle("on", !!hdrGet(type));
+      });
+      // A1 评分排序指示（▲ 升 / ▼ 默认降；engaged 时不显）
+      const sa = document.querySelector(".main thead .sortarrow");
+      if (sa) sa.textContent = sortMode==="score_asc" ? " ▲" : (sortMode==="engaged" ? "" : " ▼");
+      const bits=[];
+      if (hf.stage) bits.push("阶段"); if (hf.ch) bits.push("渠道");
+      ["country","category","email","score"].forEach(t=>{ if ($("#"+SEL_OF[t]).value) bits.push({country:"国家",category:"分类",email:"邮箱",score:"评分"}[t]); });
+      $("#active-filters").textContent = bits.length ? ("· 已筛："+bits.join("/")) : "";
+    }
+    document.addEventListener("click", e => {
+      const m=$("#hdrmenu");
+      if (m.classList.contains("show") && !m.contains(e.target) && !(e.target.closest && e.target.closest("th.filt"))) closeHdrMenu();
+    });
+
+    // 列宽：一套均衡默认宽 + 拖动持久化到 localStorage（按列 key）+ 重置入口
+    const COL_KEYS = ["company","score","stage","email","category","country","ch_linkedin","ch_whatsapp","ch_facebook","ch_instagram","ch_phone","created"];
+    const COL_DEFAULTS = { company:280, score:72, stage:120, email:200, category:88, country:68, ch_linkedin:120, ch_whatsapp:120, ch_facebook:120, ch_instagram:120, ch_phone:120, created:110 };
+    function loadColWidths(){ try { return JSON.parse(localStorage.getItem("dock_colw")||"{}"); } catch { return {}; } }
+    function saveColWidth(key,w){ const m=loadColWidths(); m[key]=w; try{ localStorage.setItem("dock_colw", JSON.stringify(m)); }catch{} }
+    function applyColWidths(){
+      const table = document.querySelector(".main table"); if (!table) return;
+      table.style.tableLayout = "fixed";
+      const saved = loadColWidths();
+      [...table.querySelectorAll("thead th")].forEach((th,i) => {
+        const key = COL_KEYS[i]; th.style.width = ((saved[key] || COL_DEFAULTS[key] || 90)) + "px";
+      });
+    }
+    window.resetColWidths = () => { try{ localStorage.removeItem("dock_colw"); }catch{} applyColWidths(); };
+    // 拖动竖线只装一次；每次 loadList 重新套用宽度（thead 静态、宽度会保留，套用幂等）
+    function makeColumnsResizable() {
+      const table = document.querySelector(".main table");
+      if (!table) return;
+      applyColWidths();
+      if (table.dataset.resizable) return;
+      table.dataset.resizable = "1";
+      const ths = [...table.querySelectorAll("thead th")];
+      ths.forEach((th,i) => {
+        if (i === ths.length - 1) return;                // 最后一列不加
+        const r = document.createElement("div");
+        r.className = "col-resizer";
+        th.appendChild(r);
+        r.addEventListener("mousedown", e => {
+          e.preventDefault(); e.stopPropagation();
+          const startX = e.pageX, startW = th.offsetWidth;
+          r.classList.add("drag");
+          const move = ev => { th.style.width = Math.max(40, startW + ev.pageX - startX) + "px"; };
+          const up = () => {
+            document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up);
+            r.classList.remove("drag"); document.body.style.userSelect="";
+            saveColWidth(COL_KEYS[i], th.offsetWidth);     // 持久化
+          };
+          document.addEventListener("mousemove", move);
+          document.addEventListener("mouseup", up);
+          document.body.style.userSelect = "none";
+        });
+      });
+    }
+
+    // 筛选控件联动
+    ["f-country","f-type","f-email","f-score"].forEach(id => $("#"+id).onchange = loadList);
+    // 批③C：f-due / f-engaged 的 handler 已删（它们写死 current="all" 会把用户踢回全部页）。
+    // 🔔待跟进 → 左栏独立视图 openDue()；🔥最近参与 → 删除，排序在「已查看」格内部按 last_engaged_at 自动生效。
+    $("#f-reset").onclick = () => {
+      ["f-country","f-type","f-email","f-score"].forEach(id => $("#"+id).value = "");
+      hf.stage = ""; hf.ch = ""; sortMode = "";
+      loadList();
+    };
+    $("#f-resetcol").onclick = () => resetColWidths();
+
+    function detailScoreClass(s){ if(s==null) return "sc-none"; if(s>=80) return "sc-green"; if(s>=60) return "sc-amber"; return "sc-red"; }
+    function detailScoreBorder(s){ if(s==null) return "var(--border)"; if(s>=80) return "#2f9e6d"; if(s>=60) return "#c9820a"; return "#c0392b"; }
+    function emailSubjectOf(rec){ const m=(rec||"").match(/^\s*subject:\s*(.+)$/im); return m?m[1].trim():""; }
+    window.toggleEmailSec = () => { const b=$("#email-body"); if(!b) return; const open=b.style.display==="none"; b.style.display=open?"block":"none"; const c=$("#email-caret"); if(c)c.textContent=open?"▴":"▾"; };
+    // 批A#1「安排跟进」：滚动到并高亮「下一步/跟进」输入框
+    window.focusNextAction = () => { const el=document.getElementById('na-text'); if(!el) return; el.scrollIntoView({behavior:'smooth',block:'center'}); el.focus(); el.style.boxShadow='0 0 0 2px var(--blue)'; setTimeout(()=>{ el.style.boxShadow=''; }, 1300); };
+
+    // #44 推荐开发信一键翻译（内联只读面板，绝不改原文，不弹窗；toggle 与请求分离便于「重试」）
+    let _trCache = {};   // leadId -> { src, zh }：同一线索同一文本命中缓存，避免重复调
+    window.translateEmail = (id) => {
+      const panel = document.getElementById('tr-panel'), btn = document.getElementById('tr-btn');
+      if (!panel) return;
+      if (panel.style.display !== 'none') { panel.style.display = 'none'; if (btn) btn.textContent = '🌐 翻译'; return; }  // 再点收起
+      panel.style.display = 'block'; if (btn) btn.textContent = '🌐 收起译文';
+      _runTranslate(id);
+    };
+    window._runTranslate = async (id) => {
+      const panel = document.getElementById('tr-panel'), ta = document.getElementById('email-edit');
+      if (!panel || !ta) return;
+      const box = h => panel.innerHTML = `<div class="tr-panel-box">${h}</div>`;
+      const zhBox = zh => box(`<div class="k muted" style="margin-bottom:4px">中文对照 · 仅供理解，不发送</div><div class="tr-zh">${esc(zh)}</div>`);
+      const src = ta.value.trim();   // 以框里现有内容为准（用户可能已编辑）
+      if (!src) { box('<div class="hint">开发信为空，无可翻译内容。</div>'); return; }
+      const c = _trCache[id];
+      if (c && c.src === src) { zhBox(c.zh); return; }   // 命中缓存
+      box('<div class="hint">翻译中…</div>');
+      try {
+        const r = await fetch('/api/translate', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ text: src }) }).then(r=>r.json());
+        if (r && r.translation) { _trCache[id] = { src, zh: r.translation }; zhBox(r.translation); }
+        else box(`<span class="hint">翻译失败，<a href="#" onclick="event.preventDefault();_runTranslate(${id})">重试</a></span>`);
+      } catch (e) {
+        box(`<span class="hint">翻译失败，<a href="#" onclick="event.preventDefault();_runTranslate(${id})">重试</a></span>`);
+      }
+    };
+    async function openDetail(id) {
+      showMainView('detail');
+      $("#v-page").innerHTML = `<div class="dp"><button class="btn-ghost" onclick="showMainView('list')">← 返回列表</button><p class="hint" style="margin-top:12px">加载中…</p></div>`;
+      const { lead, analysis } = await fetch(`/api/leads/${id}`).then(r=>r.json());
+      const a = analysis || {};
+      const stg = stageOf(lead);
+      const scored = a.match_score != null;
+      const canSend = scored && !!lead.email;
+      // 批A#1 动作条按状态自适应
+      const preSend = ['new','analyzed','pending','approved','queued'].includes(lead.status);  // 未发→可批准/确认发送
+      const isSent = lead.status==='sent';       // 已发送/已查看→安排跟进/标记已下单，隐藏批准&确认发送
+      const isReplied = lead.status==='replied'; // 已回复→去回复箱
+      let ch={}; try{ ch = lead.channels ? JSON.parse(lead.channels) : {}; }catch{}
+      const waD = waNumber(ch);
+      // 联系方式行（每个后面一个「复制」小按钮）
+      const cRow = (ic, val, href) => val ? `<div class="dp-contact"><span class="dp-c-ic">${ic}</span>${href?`<a href="${esc(href)}" target="_blank" rel="noopener" class="dp-c-val">${esc(val)}</a>`:`<span class="dp-c-val">${esc(val)}</span>`}<button class="dp-copy" data-copy="${esc(val)}" onclick="copyVal(this)">复制</button></div>` : '';
+      const emailRow = `<div class="dp-contact"><span class="dp-c-ic">✉</span><span id="email-ctl" data-email="${esc(lead.email)||''}" style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1;min-width:0">${contactEmailCtl(lead.id, lead.email)}</span>${lead.email?`<button class="dp-copy" data-copy="${esc(lead.email)}" onclick="copyVal(this)">复制</button>`:''}</div>`;
+      const contacts = [
+        cRow('🌐', lead.website ? hostOf(lead.website) : '', lead.website),
+        cRow('💼', ch.linkedin ? (channelAccount('ch_linkedin', ch.linkedin)||ch.linkedin) : '', ch.linkedin),
+        waD ? `<div class="dp-contact"><span class="dp-c-ic">💬</span><a href="${esc(waLink(waD, lead.company_name))}" target="_blank" rel="noopener" class="dp-c-val">${esc(waD)}</a><button class="dp-copy" data-copy="${esc(waD)}" onclick="copyVal(this)">复制</button></div>` : '',
+        cRow('📘', ch.facebook ? (channelAccount('ch_facebook', ch.facebook)||ch.facebook) : '', ch.facebook),
+        cRow('📷', ch.instagram ? (channelAccount('ch_instagram', ch.instagram)||ch.instagram) : '', ch.instagram),
+        cRow('📞', ch.phone || '', ch.phone?`tel:${ch.phone}`:''),
+      ].filter(Boolean).join('');
+
+      $("#v-page").innerHTML = `
+        <div class="dp">
+          <div class="dp-top">
+            <button class="btn-ghost" onclick="showMainView('list')">← 返回列表</button>
+            <div class="dp-company" title="${esc(lead.company_name)||''}">${esc(lead.company_name)||"(未命名)"}</div>
+            <div class="dp-scoremeta">
+              <span class="d-scoreblock ${detailScoreClass(a.match_score)}" style="padding:3px 10px;border-radius:7px">${scored?a.match_score+"/100":"未打分"}</span>
+              ${a.customer_category?`<span class="pill ptype">${esc(a.customer_category)}</span>`:''}
+              <span class="stg ${stg.cls}">${stg.badge}</span>
+            </div>
+          </div>
+          <div class="dp-body">
+            <div class="dp-left">
+              ${scored && a.reason ? `<div class="dp-card"><div class="k muted">判断理由</div><div style="margin-top:3px">${esc(a.reason)}</div>${a.needed_products?`<div style="margin-top:7px">${esc(a.needed_products).split(/[、,，;；]/).map(p=>p.trim()).filter(Boolean).map(p=>`<span class="tag">${esc(p)}</span>`).join("")}</div>`:''}</div>` : ''}
+              ${scored ? `<div class="dp-card">
+                <div class="k muted">✎ 推荐开发信</div>
+                <textarea id="email-edit" style="min-height:230px;margin-top:6px">${esc(a.recommended_email)||""}</textarea>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:7px">
+                  ${preSend ? `<button class="btn-green" onclick="confirmSend(${lead.id})">✅ 确认发送</button>` : ''}
+                  <button class="btn-chat" data-company="${esc(lead.company_name)||''}" onclick="copyScript(this)">📋 复制话术</button>
+                  <button class="dp-copy" id="tr-btn" onclick="translateEmail(${lead.id})">🌐 翻译</button>
+                  ${preSend ? `<span class="hint">发出不可撤（发件 hello@tejoy.net）。</span>` : `<span class="hint">已发送，如需再触达请用下方「安排跟进」。</span>`}<span class="hint" id="send-msg"></span>
+                </div>
+                <div id="tr-panel" style="display:none;margin-top:8px"></div>
+              </div>` : `<div class="dp-card"><div class="hint">尚无 AI 分析。点底部「AI 分析」抓官网+打分+写信${!lead.email?"（无邮箱可先「找邮箱」）":""}。</div></div>`}
+              ${(lead.status==='sent' && lead.has_click) ? `<div class="dp-card" id="warm-sec"><div class="k muted">🔥 趁热跟进${lead.has_followup?`（已发过跟进）`:``}</div><div class="hint" style="margin:2px 0 6px">点过链接＝有意向，生成短暖跟进你审后发。</div><div id="warm-body"><button class="btn-amber" onclick="draftWarm(${lead.id})">✍ 生成趁热跟进</button> <span class="hint" id="warm-msg"></span></div></div>` : ''}
+            </div>
+            <div class="dp-right">
+              <div class="dp-card">
+                <div class="dp-kv"><span class="muted">国家</span><span>${lead.country?esc(countryName(lead.country)):"—"}</span></div>
+                <div class="dp-kv"><span class="muted">来源</span><span>${esc(lead.source)||"—"}${lead.keyword?` · ${esc(lead.keyword)}`:''}</span></div>
+              </div>
+              <div class="dp-card">
+                <div class="k muted" style="margin-bottom:6px">联系方式</div>
+                ${emailRow}${contacts||'<div class="hint" style="margin-top:4px">暂无其它渠道</div>'}
+              </div>
+              <div class="dp-card">
+                <div class="k muted" style="margin-bottom:6px">📌 下一步 / 跟进</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+                  <input id="na-text" class="inlinput" placeholder="下一步，如：3天后电话" value="${esc(lead.next_action)||''}" style="flex:1;min-width:130px">
+                  <input id="na-date" type="date" class="fld" style="width:140px" value="${esc(lead.next_action_date)||''}">
+                  <button class="primary" onclick="saveNextAction(${lead.id})">保存</button><span class="hint" id="na-msg"></span>
+                </div>
+              </div>
+              <div class="dp-card">
+                <div class="k muted" style="margin-bottom:4px">🕑 时间线 <span class="hint" style="font-weight:400">（含录入）</span></div>
+                <div id="timeline" class="hint" style="font-size:12px">加载中…</div>
+              </div>
+            </div>
+          </div>
+          <div class="dp-bottom">
+            <button class="btn-ghost" onclick="analyzeOne(${lead.id})">${scored?"重新 AI 分析":"🔍 AI 分析"}</button>
+            ${!lead.email?`<button onclick="findMail(${lead.id},false)">找邮箱(免费)</button><button class="btn-amber" onclick="findMail(${lead.id},true)">Hunter找(1积分)</button>`:""}
+            <span class="dp-sep"></span>
+            ${preSend ? `<button class="btn-green dp-primary" ${canSend?"":"disabled title=\"需先AI打分且有邮箱\""} onclick="approveAndReview(${lead.id})">✅ 批准发送</button>`
+              : isReplied ? `<button class="btn-green dp-primary" onclick="document.getElementById('btn-replies').click()">📥 去回复箱</button>`
+              : isSent ? `<button class="btn-green dp-primary" onclick="focusNextAction()">📅 安排跟进</button>` : ''}
+            ${lead.status!=='won'?`<button class="btn-won" onclick="setStatus(${lead.id},'won')">标记已下单</button>`:""}
+            <button class="btn-amber" onclick="setStatus(${lead.id},'ignored')">忽略</button>
+            <button class="dp-danger-weak" onclick="setStatus(${lead.id},'blacklisted')" title="停止联系并拉黑">加黑名单</button>
+          </div>
+        </div>`;
+      loadTimeline(lead.id);
+    }
+    // 手动填联系邮箱（用户自己在官网找到的邮箱 → leads.email，缺邮箱标记消失、变可发送）
+    function contactEmailFormHtml(id, cur){
+      return `<input id="contact-email-input" class="inlinput" placeholder="粘贴你找到的邮箱" value="${esc(cur)||''}" style="max-width:240px">`
+        + ` <button class="primary" onclick="saveContactEmail(${id})">保存</button>`
+        + ` <button class="btn-ghost" onclick="openDetail(${id})">取消</button>`
+        + ` <span class="hint" id="contact-email-msg"></span>`;
+    }
+    function contactEmailCtl(id, email){
+      return email
+        ? `<span class="tag">✉ ${esc(email)}</span> <button class="btn-ghost" style="padding:2px 8px;font-size:12px" onclick="editContactEmail(${id})" title="修改邮箱">✏️ 改</button>`
+        : `<span class="miss">缺邮箱</span> ` + contactEmailFormHtml(id, "");
+    }
+    window.editContactEmail = (id) => {
+      const box = document.getElementById('email-ctl'); if(!box) return;
+      box.innerHTML = contactEmailFormHtml(id, box.getAttribute('data-email')||'');
+      document.getElementById('contact-email-input')?.focus();
+    };
+    window.saveContactEmail = async (id) => {
+      const inp = document.getElementById('contact-email-input');
+      const msg = document.getElementById('contact-email-msg');
+      const email = (inp?.value||'').trim();
+      const setMsg = (t,err)=>{ if(msg){ msg.textContent=t; msg.style.color = err?'var(--red)':''; } };
+      if(email.length>200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ setMsg('邮箱格式不对', true); return; }
+      setMsg('保存中…', false);
+      const r = await fetch(`/api/leads/${id}/contact-email`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({email}) })
+        .then(async res=>({status:res.status, j:await res.json().catch(()=>({}))})).catch(e=>({status:0, j:{error:String(e)}}));
+      if(r.status===200 && r.j.ok){ await openDetail(id); loadStats(); loadList(); loadFacets(); return; }
+      setMsg((r.j && r.j.error) || '保存失败', true);
+    };
+
+    // 趁热跟进（engaged 点击线索）：起草→可编辑→审后手动发。半自动，不自动发。
+    window.draftWarm = async (id) => {
+      const box = document.getElementById('warm-body'), msg = document.getElementById('warm-msg');
+      if (msg) msg.textContent = '生成中…';
+      const r = await fetch(`/api/leads/${id}/warm-followup`, { method:'POST' }).then(res=>res.json()).catch(e=>({error:String(e)}));
+      if (!r.ok || r.error) { if (msg) msg.textContent = '失败：'+(r.error||'未知'); return; }
+      box.innerHTML = `<textarea id="warm-edit" style="min-height:150px">${esc(r.text)}</textarea>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+          <button class="btn-green" onclick="sendWarm(${id})">✅ 确认发送</button>
+          <button class="btn-ghost" onclick="draftWarm(${id})">↻ 重新生成</button>
+          <span class="hint">发出不可撤，确认无误再发（发件 hello@tejoy.net）。</span><span class="hint" id="warm-send-msg"></span>
+        </div>`;
+    };
+    window.sendWarm = async (id) => {
+      const t = (document.getElementById('warm-edit')?.value) || '';
+      const msg = document.getElementById('warm-send-msg'), btn = event && event.target;
+      if (btn) btn.disabled = true; if (msg) msg.textContent = '发送中…';
+      const r = await fetch(`/api/leads/${id}/warm-followup/send`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ text:t }) }).then(res=>res.json()).catch(e=>({error:String(e)}));
+      if (r.error) { if (msg) msg.textContent = '失败：'+r.error; if (btn) btn.disabled=false; return; }
+      if (r.skipped) { if (msg) msg.textContent = '已跳过：'+r.skipped; if (btn) btn.disabled=false; return; }
+      if (msg) msg.textContent = '✅ 已发送'; loadStats(); loadList();
+    };
+    window.openLeadWarm = async (id) => { closeToday(); await openDetail(id); if (document.getElementById('warm-body')) draftWarm(id); };
+
+    // 批准发送 → 置 approved + 展开滚到开发信 + 露「确认发送」（冷邮件发前必看一眼）
+    window.approveAndReview = async (id) => {
+      const res = await fetch(`/api/leads/${id}/status`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({status:"approved"}) }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { alert(res.error); return; }
+      const b=$("#email-body"); if(b){ b.style.display="block"; const c=$("#email-caret"); if(c)c.textContent="▴"; b.scrollIntoView({behavior:"smooth", block:"center"}); }
+      loadStats(); loadList();
+    };
+    // 确认发送：保存(可能编辑过的)开发信 → 立即发送
+    window.confirmSend = async (id) => {
+      const msg=$("#send-msg"); const btn=event&&event.target; if(btn) btn.disabled=true;
+      msg.textContent="发送中…";
+      const edited = ($("#email-edit")?.value)||"";
+      await fetch(`/api/leads/${id}/email`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({recommended_email:edited}) }).catch(()=>{});
+      const res = await fetch(`/api/leads/${id}/send`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { msg.textContent="失败: "+res.error; if(btn) btn.disabled=false; return; }
+      if (res.skipped) { msg.textContent="已跳过: "+res.skipped; if(btn) btn.disabled=false; return; }
+      msg.textContent="✅ 已发送"; loadStats(); loadList();
+    };
+    // 保存下一步动作（轻CRM）
+    window.saveNextAction = async (id) => {
+      const next_action = $("#na-text").value.trim();
+      const next_action_date = $("#na-date").value;
+      $("#na-msg").textContent = "保存中…";
+      const res = await fetch(`/api/leads/${id}/next-action`, { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ next_action, next_action_date }) }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      $("#na-msg").textContent = res.error ? ("错误: "+res.error) : "已保存";
+      if (!res.error) loadList();
+    };
+    // 加载线索时间线
+    async function loadTimeline(id){
+      const { events } = await fetch(`/api/leads/${id}/timeline`).then(r=>r.json()).catch(()=>({events:[]}));
+      const el = document.getElementById("timeline"); if (!el) return;
+      el.innerHTML = (events && events.length)
+        ? events.map(e=>`<div class="tl-row"><span class="tl-time">${esc(fmtDate(e.time))}</span><span style="font-size:13px">${esc(e.label)}</span></div>`).join("")
+        : '<span class="muted">暂无事件</span>';
+    }
+    window.setStatus = async (id, status) => {
+      const res = await fetch(`/api/leads/${id}/status`, { method:"POST",
+        headers:{"content-type":"application/json"}, body:JSON.stringify({status}) }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { alert(res.error); return; }   // 如合规保护 409：退订/黑名单/退信不可复发
+      closeDetail(); loadStats(); loadList(); loadFacets();
+    };
+    window.closeDetail = () => showMainView("list");
+
+    // 评分色块
+    window.scoreBadge = (s) => {
+      if (s == null) return '<span class="muted">—</span>';
+      const color = s >= 70 ? "var(--green)" : s >= 40 ? "var(--amber)" : "var(--red)";
+      return `<span class="pill" style="background:${color};color:#fff">${s}</span>`;
+    };
+
+    // 单条 AI 分析
+    window.analyzeOne = async (id) => {
+      const btn = $("#d-analyze");
+      if (btn) { btn.disabled = true; btn.textContent = "分析中…（抓官网+模型，约需 10-30 秒）"; }
+      const res = await fetch(`/api/leads/${id}/analyze`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { if(btn){ btn.disabled=false; btn.textContent="AI 分析（失败，重试）"; } alert("分析失败: " + res.error); return; }
+      await openDetail(id); loadStats(); loadList(); loadFacets();
+    };
+
+    // 抽干式分析：循环调 /api/analyze/batch 直到无 new（或达轮数上限），onProgress(ok,remaining,total) 报进度。
+    // 每批是独立请求、各有自己的子请求预算，故能把大量积压全打完（不受单请求子请求上限约束）。
+    async function drainAnalyze(onProgress){
+      const BATCH = 8, MAX_ROUNDS = 100; // 100×8=800 上限，防死循环
+      const st0 = await fetch("/api/stats").then(r=>r.json()).catch(()=>({byStatus:{}}));
+      const total0 = (st0.byStatus||{}).new || 0;
+      let doneOk = 0, doneProc = 0, rounds = 0, prevNew = Infinity, stuck = 0;
+      while (rounds < MAX_ROUNDS){
+        const st = await fetch("/api/stats").then(r=>r.json()).catch(()=>({byStatus:{}}));
+        const newCount = (st.byStatus||{}).new || 0;
+        if (!newCount) break;
+        // 停滞检测：new 数连续 2 轮没下降(如 LLM key 失效每条都失败) → 停，别空转到上限
+        if (newCount >= prevNew) { if (++stuck >= 2) return { done:doneProc, ok:doneOk, remaining:newCount, rounds, stalled:true }; }
+        else stuck = 0;
+        prevNew = newCount;
+        if (onProgress) onProgress(doneOk, newCount, Math.max(total0, doneProc + newCount));
+        const a = await fetch("/api/analyze/batch", { method:"POST", headers:{"content-type":"application/json"},
+          body:JSON.stringify({limit:BATCH}) }).then(r=>r.json()).catch(e=>({error:String(e)}));
+        if (a.error) return { done:doneProc, ok:doneOk, error:a.error };
+        doneOk += a.ok || 0; doneProc += a.processed || 0;
+        loadStats(); loadList(); loadFacets();
+        rounds++;
+        if (!a.processed) break; // 防空转
+      }
+      const stF = await fetch("/api/stats").then(r=>r.json()).catch(()=>({byStatus:{}}));
+      return { done:doneProc, ok:doneOk, remaining:(stF.byStatus||{}).new || 0, rounds, hitCap:rounds>=MAX_ROUNDS };
+    }
+
+    // 批量分析（不搜索，只处理已有 new 线索）—— 点一次抽干积压，显示进度
+    $("#btn-batch").onclick = async () => {
+      const s = $("#batch-status"), btn = $("#btn-batch");
+      btn.disabled = true;
+      const r = await drainAnalyze((ok, remaining, total)=>{ s.textContent = `批量分析中…已分析 ${ok}/${total}，剩 ${remaining}`; });
+      btn.disabled = false;
+      if (r.error) { s.textContent = `分析出错：${r.error}（已分析 ${r.ok}，可再点续跑）`; loadStats(); loadList(); loadFacets(); return; }
+      s.textContent = r.stalled
+        ? `分析停滞：已分析 ${r.ok}，仍剩 ${r.remaining} 且无进展（多为模型 key/网络问题，请检查后重试）`
+        : r.remaining
+          ? `已分析 ${r.ok} 条，仍剩 ${r.remaining}${r.hitCap ? "（达单次上限，再点一次续跑）" : "（交后台）"}`
+          : `✅ 全部分析完成：共 ${r.ok} 条`;
+      loadStats(); loadList(); loadFacets();
+    };
+
+    // 单条立即发送
+    window.sendOne = async (id) => {
+      if (!(await uiConfirm({ title:'确认发送开发信', body:'确认用 hello@tejoy.net 给这条线索发送开发信？\n发出不可撤。', confirmText:'确认发送' }))) return;
+      const res = await fetch(`/api/leads/${id}/send`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { alert("发送失败: " + res.error); return; }
+      if (res.skipped) { alert("已跳过: " + res.skipped); return; }
+      await openDetail(id); loadStats(); loadList();
+    };
+
+    // 批量发送已批准
+    $("#btn-send").onclick = async () => {
+      const s = $("#batch-status");
+      if (!(await uiConfirm({ title:'群发开发信', body:'批量发送已批准线索（按分数从高到低，遵守每日上限）？\n发出不可撤（发件 hello@tejoy.net）。', confirmText:'确认群发' }))) return;
+      s.textContent = "发送中…";
+      const res = await fetch("/api/send/batch", { method:"POST",
+        headers:{"content-type":"application/json"}, body:JSON.stringify({limit:10}) })
+        .then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { s.textContent = "失败: " + res.error; return; }
+      if (res.capReached && res.processed===0) { s.textContent = `已达今日上限（${res.dailyLimit} 封，今日已发 ${res.sentToday}）`; return; }
+      const fail = res.results.filter(r=>!r.ok);
+      const failMsg = fail.length ? `，失败/跳过 ${fail.length}（${fail[0].error||fail[0].skipped||""}）` : "";
+      s.textContent = `已发 ${res.sent}/${res.processed}${failMsg}｜今日累计 ${res.sentToday}/${res.dailyLimit}`;
+      loadStats(); loadList();
+    };
+
+    // 单条找邮箱（useHunter=false 免费抓官网；true 走 Hunter 花1积分）
+    window.findMail = async (id, useHunter=false) => {
+      const res = await fetch(`/api/leads/${id}/find-email`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({useHunter}) }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { alert("失败: " + res.error); return; }
+      if (res.email) { await openDetail(id); loadList(); loadFacets(); }
+      else alert(useHunter ? "Hunter 也没找到公开邮箱（可能确实只有联系表单）。" : "官网没抓到公开邮箱。可点「Hunter找(1积分)」用 Hunter 兜底。");
+    };
+
+    // 批量找邮箱（免费：只抓官网，不花 Hunter 积分）
+    $("#btn-findmail").onclick = async () => {
+      const s = $("#batch-status");
+      s.textContent = "找邮箱中…（免费抓联系页，可能需 1-2 分钟）";
+      const res = await fetch("/api/emails/find-batch", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({limit:20}) })
+        .then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { s.textContent = "失败: " + res.error; return; }
+      s.textContent = `找邮箱完成：${res.found}/${res.processed} 家补上了邮箱（免费抓取）`;
+      loadStats(); loadList(); loadFacets();
+    };
+
+    // Hunter 补邮箱（手动，花积分；只对官网免费抓不到的公司生效）
+    $("#btn-hunter").onclick = async () => {
+      const st = await fetch("/api/hunter/status").then(r=>r.json()).catch(()=>({}));
+      if (!st.enabled) { alert("Hunter 未启用（未配置 API key）。"); return; }
+      if (!st.targets) { alert("当前没有『已分析但缺邮箱』的线索需要补。"); return; }
+      const remain = st.available!=null ? st.available : "?";
+      const n = Math.min(st.targets, 15);
+      if (!(await uiConfirm({ title:'Hunter 补邮箱', body:`将对最多 ${n} 家缺邮箱公司用 Hunter 查询（每家 1 积分，最多花 ${n} 积分）。\nHunter 本月剩余：${remain} 积分。\n（只对官网免费抓不到邮箱的公司生效）`, confirmText:'继续' }))) return;
+      const s = $("#batch-status"); s.textContent = "Hunter 补邮箱中…";
+      const res = await fetch("/api/emails/find-batch", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({limit:15, useHunter:true}) })
+        .then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { s.textContent = "失败: " + res.error; return; }
+      s.textContent = `Hunter 补邮箱完成：新增邮箱 ${res.found}/${res.processed}，消耗 ${res.hunterUsed||0} 积分`;
+      loadStats(); loadList(); loadFacets();
+    };
+
+    // ===== 找客户配置面板（#45 国家/关键词 勾选框 + 增删 + 全选/全不选 + 持久化）=====
+    let _fcAllCountries = {};          // 目录 { gl: 中文名 }
+    let _fcCountryList = [];           // 显示为 chips 的 gl 码（可增删，随保存持久化）
+    let _fcCountryChecked = new Set(); // 勾选(本轮搜索)的 gl 码
+    let _fcKwRows = [];                // 关键词行（含 stats）
+    let _fcKwChecked = new Set();      // 勾选(本轮使用)的关键词字符串
+    let _fcKwEffCount = 0;             // 生效默认关键词数（清单为空时用于提示/预估）
+    let _fcKwActive = null;            // 后端持久化的勾选关键词（null=全部启用）
+    let _fcCcManage = false, _fcKwManage = false;   // 管理态：关=日常勾选(藏增删)，开=可增删清单
+    // 管理开关：gate 住"增删清单项"（chip的×、添加国家、新增关键词/载入默认）；勾选始终可用
+    window.fcToggleManage = (which) => {
+      if (which==='cc'){ _fcCcManage=!_fcCcManage; const b=$("#fc-cc-manage"); if(b){ b.textContent=_fcCcManage?'完成':'管理'; b.classList.toggle('mini-on',_fcCcManage); } const r=$("#fc-cc-editrow"); if(r) r.style.display=_fcCcManage?'flex':'none'; renderCountries(); }
+      else { _fcKwManage=!_fcKwManage; const b=$("#fc-kw-manage"); if(b){ b.textContent=_fcKwManage?'完成':'管理'; b.classList.toggle('mini-on',_fcKwManage); } const r=$("#fc-kw-editrow"); if(r) r.style.display=_fcKwManage?'flex':'none'; renderKwInline(); }
+    };
+
+    function getSelectedCountries(){ return [..._fcCountryChecked]; }
+    function getSelectedKeywords(){ return _fcKwRows.map(k=>k.keyword).filter(kw=>_fcKwChecked.has(kw)); }
+    function updateTransparency(){
+      const nc = _fcCountryChecked.size;
+      const nk = _fcKwRows.length ? getSelectedKeywords().length : _fcKwEffCount;  // 无自定义清单时用生效默认数
+      const per = Number($("#dp-perkw").value) || 1;
+      const est = nk*nc*per;
+      const big = est > 500;   // 大批量醒目提醒，防误跑烧钱
+      $("#dp-transparency").innerHTML = (nc && nk)
+        ? `<span class="${big?'fc-warn':''}">本轮将执行：<b>${nk}</b> 个关键词 × <b>${nc}</b> 个国家 = <b>${nk*nc}</b> 次搜索，每次取 <b>${per}</b> 条 → 预计最多新增 <b>${est}</b> 家公司（去重后通常少很多）。${big?' ⚠️ 批量较大，注意搜索/AI 成本与时长。':''}</span>`
+        : `<span class="muted">请至少勾选 1 个国家和 1 个关键词。</span>`;
+    }
+
+    function renderCountries(){
+      const grid = $("#dp-countries");
+      grid.innerHTML = _fcCountryList.map(code=>{
+        const on = _fcCountryChecked.has(code);
+        return `<span class="ccitem ${on?'on':''}" data-cc="${esc(code)}"><label><input type="checkbox" ${on?'checked':''} onchange="fcCountryToggle('${esc(code)}',this.checked)"> ${esc(_fcAllCountries[code]||code)}</label>${_fcCcManage?`<i onclick="fcCountryDel('${esc(code)}')" title="从清单移除">×</i>`:''}</span>`;
+      }).join("") || `<span class="muted">清单为空，点右上「管理」加国家。</span>`;
+      const add = $("#fc-cc-add");
+      if (add){
+        const opts = Object.entries(_fcAllCountries).filter(([c])=>!_fcCountryList.includes(c))
+          .map(([c,n])=>`<option value="${esc(c)}">${esc(n)}（${esc(c)}）</option>`).join("");
+        add.innerHTML = `<option value="">＋ 添加国家…</option>` + opts;
+      }
+      updateTransparency();
+    }
+    window.fcCountryToggle = (code, on) => { if(on) _fcCountryChecked.add(code); else _fcCountryChecked.delete(code); const el=document.querySelector(`.ccitem[data-cc="${code}"]`); if(el) el.classList.toggle('on',on); updateTransparency(); };
+    window.fcCountryDel = (code) => { _fcCountryList = _fcCountryList.filter(c=>c!==code); _fcCountryChecked.delete(code); renderCountries(); };
+    window.fcCountryAll = (on) => { if(on) _fcCountryList.forEach(c=>_fcCountryChecked.add(c)); else _fcCountryChecked.clear(); renderCountries(); };
+
+    function renderKwInline(){
+      $("#dp-kwlist").innerHTML = _fcKwRows.length
+        ? _fcKwRows.map(k=>{
+            const on = _fcKwChecked.has(k.keyword);
+            const stat = (k.sent_count>0)   // 已有发送数据才显示统计；新词不再显示"新词"标签（#45 Joe 嫌多余）
+              ? ` <span style="color:var(--muted);font-size:11px">发${k.sent_count}·回${k.reply_count}·${Math.round((k.reply_rate||0)*100)}%</span>`
+              : ``;
+            return `<span class="kwitem ${on?'on':''}" data-kw="${esc(k.keyword)}" title="权重 ${k.weight!=null?k.weight:1}（按回复率自动加权）"><label><input type="checkbox" ${on?'checked':''} onchange="fcKwToggle(this)"> ${esc(k.keyword)}</label>${stat}${_fcKwManage?`<i onclick="delKeyword(${k.id})" title="删除">×</i>`:''}</span>`;
+          }).join("")
+        : `<span class="muted">当前用内置默认 ${_fcKwEffCount} 个关键词。点右上「管理」→「载入默认」把它们变成可编辑、可勾选，或添加自定义词。</span>`;
+      updateTransparency();
+    }
+    window.fcKwToggle = (input) => { const sp=input.closest('.kwitem'); const kw=sp&&sp.dataset.kw; if(!kw) return; if(input.checked) _fcKwChecked.add(kw); else _fcKwChecked.delete(kw); sp.classList.toggle('on',input.checked); updateTransparency(); };
+    window.fcKwAll = (on) => { if(on) _fcKwRows.forEach(k=>_fcKwChecked.add(k.keyword)); else _fcKwChecked.clear(); renderKwInline(); };
+    // 批A#3 客户画像展开/收起
+    window.toggleProfile = () => { const t=$("#fc-profile"), btn=$("#fc-profile-toggle"); if(!t) return; const collapsed=t.classList.toggle('fc-collapsed'); if(btn) btn.textContent = collapsed ? '展开 / 编辑' : '收起'; if(!collapsed) t.focus(); };
+    // 批B 免费目录源：NMEA（逐 affcode + 10s Crawl-delay）+ rvwithtito
+    async function runNmeaHarvest(){
+      if (window._freeRunning) return; window._freeRunning = true;
+      const btn=$("#fc-nmea"), btn2=$("#fc-rvtito"), log=$("#fc-free-log"), res=$("#fc-free-result");
+      btn.disabled=true; btn2.disabled=true; res.innerHTML=""; log.style.display="block"; log.textContent="";
+      let total=0, base="";
+      try {
+        const affs=['Dealer','International'];
+        for (let i=0;i<affs.length;i++){
+          const aff=affs[i];
+          log.textContent = base + `抓取 NMEA ${aff} 目录中…（服务端渲染 HTML，零 Serper 费）`;
+          const r = await fetch("/api/discover/nmea",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({affcode:aff})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+          if (r.error){ base += `${aff} 抓取失败：${r.error}\n`; log.textContent=base; break; }
+          total += r.inserted||0;
+          base += `${aff}：解析 ${r.fetched} 家，新增 ${r.inserted}（去重 ${r.skipped}·无站 ${r.noSite}·社媒 ${r.social}）\n`;
+          log.textContent=base; loadStats(); loadList(); loadFacets();
+          if (i<affs.length-1){
+            for (let s=10;s>0;s--){ log.textContent = base + `等待 ${s}s（遵守目录 Crawl-delay 抓取礼貌间隔）…`; await new Promise(r=>setTimeout(r,1000)); }
+            log.textContent=base;
+          }
+        }
+        res.innerHTML = `✅ NMEA 抓取完成：共新增 <b>${total}</b> 家船舶经销/安装商（零 Serper 费）。 <button class="primary" onclick="gotoGroup('unscored')">去待分析 →</button>`;
+      } finally { btn.disabled=false; btn2.disabled=false; window._freeRunning=false; }
+    }
+    async function runRvHarvest(){
+      if (window._freeRunning) return; window._freeRunning = true;
+      const btn=$("#fc-nmea"), btn2=$("#fc-rvtito"), log=$("#fc-free-log"), res=$("#fc-free-result");
+      btn.disabled=true; btn2.disabled=true; res.innerHTML=""; log.style.display="block"; log.textContent="抓取 rvwithtito RV 安装商名单中…（零 Serper 费）";
+      try {
+        const r = await fetch("/api/discover/rvwithtito",{method:"POST"}).then(r=>r.json()).catch(e=>({error:String(e)}));
+        if (r.error){ log.textContent="抓取失败："+r.error; return; }
+        log.textContent = `解析外链 ${r.fetched}，新增 ${r.inserted}（去重/黑名单跳过 ${r.skipped}·社媒 ${r.social}）`;
+        loadStats(); loadList(); loadFacets();
+        res.innerHTML = `✅ 完成：新增 <b>${r.inserted}</b> 家 RV 安装商（零 Serper 费）。 <button class="primary" onclick="gotoGroup('unscored')">去待分析 →</button>`;
+      } finally { btn.disabled=false; btn2.disabled=false; window._freeRunning=false; }
+    }
+    window.delKeyword = async (id) => { await fetch(`/api/keywords/${id}`, {method:"DELETE"}); await reloadKw(); };
+    // 重载关键词清单，保留当前勾选态（新加的默认勾选）
+    async function reloadKw(){
+      const prev = new Set(_fcKwChecked);
+      const data = await fetch("/api/keywords").then(r=>r.json());
+      _fcKwEffCount = (data.effective||[]).length;
+      _fcKwRows = data.keywords||[];
+      _fcKwChecked = new Set(_fcKwRows.map(k=>k.keyword).filter(kw=>prev.has(kw)));
+      renderKwInline();
+    }
+
+    async function openDiscover(){
+      showMainView('found');
+      const cfg = await fetch("/api/settings/search").then(r=>r.json());
+      _fcAllCountries = cfg.allCountries||{};
+      _fcCountryList = (cfg.countryList||[]).slice();
+      _fcCountryChecked = new Set(cfg.countries||[]);
+      _fcCountryChecked.forEach(c=>{ if(!_fcCountryList.includes(c)) _fcCountryList.push(c); });  // 勾选项必在清单
+      _fcKwActive = Array.isArray(cfg.activeKeywords) ? cfg.activeKeywords : null;
+      { const au=$("#dp-auto"); if(au) au.checked = !!cfg.discoveryEnabled; }   // #S1 后台自动搜索开关回显
+      { const n=$("#fc-nmea"); if(n) n.onclick=runNmeaHarvest; const rv=$("#fc-rvtito"); if(rv) rv.onclick=runRvHarvest; }   // 批B 免费目录源按钮
+      if (cfg.serper) { const u=$("#fc-serper-used"); if(u) u.textContent = cfg.serper.usedToday; const b=$("#fc-serper-budget"); if(b) b.value = cfg.serper.budget; }   // P0-c Serper 用量/预算回显
+      { const sb=$("#fc-serper-save"); if(sb) sb.onclick = async () => { const v=Number($("#fc-serper-budget").value)||200; await fetch("/api/settings/search",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({serperBudget:v})}); $("#dp-msg").textContent="Serper 预算已保存"; }; }
+      const per = cfg.perKeyword || 10;
+      $("#dp-perkw").value = per; $("#fc-perkw-val").textContent = per;
+      $("#dp-perkw").oninput = () => { $("#fc-perkw-val").textContent = $("#dp-perkw").value; updateTransparency(); };
+      $("#fc-cc-add").onchange = (e) => { const c=e.target.value; if(!c) return; if(!_fcCountryList.includes(c)) _fcCountryList.push(c); _fcCountryChecked.add(c); e.target.value=""; renderCountries(); };
+      fetch("/api/settings/profile").then(r=>r.json()).then(p=>{ const el=$("#fc-profile"); if(el) el.value = p.profile||""; }).catch(()=>{});
+      // 每次进入默认"管理关"（日常勾选态，藏增删）
+      _fcCcManage=false; _fcKwManage=false;
+      { const b=$("#fc-cc-manage"); if(b){ b.textContent='管理'; b.classList.remove('mini-on'); } const r=$("#fc-cc-editrow"); if(r) r.style.display='none'; }
+      { const b=$("#fc-kw-manage"); if(b){ b.textContent='管理'; b.classList.remove('mini-on'); } const r=$("#fc-kw-editrow"); if(r) r.style.display='none'; }
+      renderCountries();
+      // 关键词：默认平铺（#45）——表空时自动灌入默认词，进页面即可见可勾（和国家一致），不必先点「载入默认」
+      let kd = await fetch("/api/keywords").then(r=>r.json());
+      if (!(kd.keywords||[]).length) {
+        await fetch("/api/keywords",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({seedDefaults:true})});
+        kd = await fetch("/api/keywords").then(r=>r.json());
+      }
+      _fcKwEffCount = (kd.effective||[]).length;
+      _fcKwRows = kd.keywords||[];
+      _fcKwChecked = (_fcKwActive===null)
+        ? new Set(_fcKwRows.map(k=>k.keyword))
+        : new Set(_fcKwRows.map(k=>k.keyword).filter(kw=>_fcKwActive.includes(kw)));
+      renderKwInline();
+      $("#dp-progress").style.display = "none";
+      $("#dp-bar").style.width = "0";
+      $("#dp-log").textContent = "";
+      $("#dp-msg").textContent = "";
+      { const rb=$("#dp-result"); if(rb) rb.innerHTML = ""; }
+    }
+    $("#btn-discover").onclick = openDiscover;
+    $("#dp-kwadd").onclick = async () => {
+      const kw = $("#dp-kwnew").value.trim(); if (!kw) return;
+      await fetch("/api/keywords", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({keyword:kw})});
+      _fcKwChecked.add(kw);                 // 新加默认勾选
+      $("#dp-kwnew").value=""; await reloadKw();
+    };
+    $("#dp-kwseed").onclick = async () => {
+      await fetch("/api/keywords", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({seedDefaults:true})});
+      const data = await fetch("/api/keywords").then(r=>r.json());
+      _fcKwRows = data.keywords||[]; _fcKwEffCount=(data.effective||[]).length;
+      _fcKwChecked = new Set(_fcKwRows.map(k=>k.keyword));  // 载入默认后全部勾选
+      renderKwInline();
+    };
+    async function saveSearchCfg(){
+      await fetch("/api/settings/search", {method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({ countryList:_fcCountryList, countries:[..._fcCountryChecked],
+          activeKeywords:(_fcKwRows.length ? getSelectedKeywords() : null), perKeyword:Number($("#dp-perkw").value)||10,
+          discoveryEnabled: !!($("#dp-auto") && $("#dp-auto").checked) })});
+      const prof = $("#fc-profile"); if (prof) await fetch("/api/settings/profile", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({profile:prof.value})}).catch(()=>{});
+      return true;
+    }
+    $("#dp-save").onclick = async () => { if (await saveSearchCfg()) { const m=$("#dp-save-msg"); if(m) m.textContent = "✅ 已保存"; setTimeout(()=>{ const m2=$("#dp-save-msg"); if(m2) m2.textContent=""; }, 2500); } };
+
+    // 一键流水线：搜索 → 分析 → 补邮箱，进度可见
+    let pipelineRunning = false;
+    async function runPipeline(opts){
+      if (pipelineRunning) return;
+      const countries = getSelectedCountries();
+      if (!countries.length) { $("#dp-msg").textContent = "请至少勾选一个国家"; return; }
+      const kws = getSelectedKeywords();
+      if (_fcKwRows.length && !kws.length) { $("#dp-msg").textContent = "请至少勾选一个关键词"; return; }
+      pipelineRunning = true;
+      ["dp-run","dp-searchonly","dp-save"].forEach(id=>$("#"+id).disabled=true);
+      $("#dp-msg").textContent = "";
+      { const rb=$("#dp-result"); if(rb) rb.innerHTML = ""; }
+      $("#dp-progress").style.display = "block";
+      const bar = $("#dp-bar"), log = $("#dp-log");
+      const setBar = p => bar.style.width = Math.min(100,Math.max(0,p)) + "%";
+      const setLog = m => log.textContent = m;
+      try {
+        await saveSearchCfg();
+        const per = Number($("#dp-perkw").value)||8;
+        // ① 搜索
+        setLog("① 搜索中…（连 Google 搜索，约需 10-40 秒）"); setBar(6);
+        const d = await fetch("/api/discover",{method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({countries, keywords:(_fcKwRows.length ? kws : undefined), perKeyword:per})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+        if (d.error){ setLog("① 搜索失败：" + d.error); return; }
+        setLog(`① 搜索完成：执行 ${d.searched} 次搜索，新增 ${d.inserted} 家，去重/跳过 ${d.skipped}。`
+          + (d.budgetStopped ? `\n⚠️ 已达今日 Serper 预算上限（${d.serperUsedToday}/${d.serperBudget}），本轮提前停止。可在上方调高预算或明天再跑。` : ""));
+        if (d.serperUsedToday != null) { const u=$("#fc-serper-used"); if(u) u.textContent = d.serperUsedToday; }   // P0-c 刷新今日用量
+        setBar(20); loadStats(); loadList(); loadFacets();
+        if (!opts.analyze){ setBar(100); setLog(log.textContent + "\n（已选“仅搜索”，未做 AI 分析。可稍后用「批量分析」处理。）"); return; }
+
+        // ② AI 分析（复用 drainAnalyze 抽干，直到无 new 或达上限）
+        const a2 = await drainAnalyze((ok, remaining, total)=>{
+          setLog(`② AI 分析中…已分析 ${ok}，还剩 ${remaining} 条（抓官网+打分+写信，每条约 10-30 秒）`);
+          setBar(20 + (total ? Math.min(1, ok/total) : 0) * 50);
+        });
+        if (a2.error) setLog("② 分析出错：" + a2.error);
+        const analyzed = a2.ok || 0;
+        const remain = a2.remaining || 0;
+        setBar(72);
+
+        // ③ 补邮箱（给已分析但无邮箱的公司）
+        let found = 0, fr = 0; const FMAX = 5;
+        while (fr < FMAX){
+          setLog(`③ 补邮箱中…（深挖联系页${'.'.repeat(fr%3+1)}）`);
+          const f = await fetch("/api/emails/find-batch",{method:"POST",headers:{"content-type":"application/json"},
+            body:JSON.stringify({limit:15})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+          if (f.error){ setLog("③ 补邮箱出错：" + f.error); break; }
+          found += f.found || 0;
+          setBar(72 + (fr+1)/FMAX*28); loadList(); loadFacets();
+          if (!f.processed || f.processed < 15) break;
+          fr++;
+        }
+        setBar(100);
+        setLog(`✅ 本轮完成：新增 ${d.inserted} 家 · 已分析打分 ${analyzed} 家 · 免费补上邮箱 ${found} 家。`
+          + (remain ? `\n还有 ${remain} 家将由后台每 6 小时自动继续处理。` : "")
+          + `\n提示：用「缺邮箱」筛选查看仍缺邮箱的公司，可点上方「🔑 Hunter补邮箱」用 Hunter 兜底（花积分）；「≥70 分」筛出优质客户后即可批准发送。`);
+        { const rb=$("#dp-result"); if(rb) rb.innerHTML = `本次新增 <b>${d.inserted}</b> 家 · 已打分 <b>${analyzed}</b> 家　<button class="primary" onclick="gotoGroup('unscored')">查看这批新线索 →</button>`; }
+        loadStats(); loadList(); loadFacets();
+      } finally {
+        pipelineRunning = false;
+        ["dp-run","dp-searchonly","dp-save"].forEach(id=>$("#"+id).disabled=false);
+      }
+    }
+    $("#dp-run").onclick = () => runPipeline({analyze:true, findEmail:true});
+    $("#dp-searchonly").onclick = () => runPipeline({analyze:false, findEmail:false});
+
+    // 回复箱
+    const catLabel = { interested:"有意向", inquiry:"询价", not_interested:"无兴趣", complaint:"投诉", other:"其他" };
+    const catColor = { interested:"var(--green)", inquiry:"var(--blue)", not_interested:"#666", complaint:"var(--red)", other:"#555" };
+    async function renderReplies() {
+      const { replies } = await fetch("/api/replies").then(r=>r.json());
+      $("#replies-count").textContent = `共 ${replies.length} 封`;
+      $("#replies-list").innerHTML = replies.length ? replies.map(r=>`
+        <div style="border-bottom:1px solid var(--border);padding:10px 0">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span><span class="pill" style="background:${catColor[r.category]||'#555'};color:#fff">${catLabel[r.category]||r.category}</span>
+              <b style="margin-left:8px">${esc(r.company_name)||esc(r.from_email)||'(未知)'}</b></span>
+            <span class="muted" style="font-size:12px">${esc(r.received_at||'')}</span>
+          </div>
+          <div class="muted" style="font-size:12px;margin:3px 0">${esc(r.from_email)} · ${esc(r.subject)||'(无主题)'}</div>
+          ${r.summary?`<div style="font-size:13px;color:#cfd6e2">🤖 ${esc(r.summary)}</div>`:''}
+          <details style="margin-top:4px"><summary class="hint" style="cursor:pointer">看正文</summary>
+            <div style="white-space:pre-wrap;font-size:13px;color:#b9c0cc;margin-top:6px;max-height:200px;overflow:auto">${esc(r.content||'')}</div></details>
+          ${r.category!=='not_interested'&&r.category!=='complaint'?`<div style="margin-top:6px"><button class="mini btn-amber" onclick="draftReply(${r.id}, this)">🤖 AI 起草回复</button></div>`:''}
+          <div id="draft-${r.id}"></div>
+        </div>`).join("") : '<div class="muted" style="padding:20px;text-align:center">还没有回复。发出去的开发信有人回复后，点上方「立即拉取」或等 Cron 自动拉。</div>';
+    }
+    // 回复 AI 起草
+    window.draftReply = async (id, btn) => {
+      btn.disabled = true; const t = btn.textContent; btn.textContent = "起草中…（约 10-20 秒）";
+      const res = await fetch(`/api/replies/${id}/draft`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      btn.disabled = false; btn.textContent = t;
+      if (res.error) { alert("起草失败: " + res.error); return; }
+      const box = document.getElementById(`draft-${id}`);
+      box.innerHTML = `<div class="hint" style="margin:8px 0 3px">🤖 AI 起草（供参考，复制到邮箱里发给客户；未自动发送）：</div><textarea style="min-height:130px">${esc(res.draft)}</textarea>`;
+    };
+    $("#btn-replies").onclick = async () => { await renderReplies(); $("#replies-overlay").classList.add("show"); };
+    $("#cancel-replies").onclick = () => $("#replies-overlay").classList.remove("show");
+    $("#btn-fetch-replies").onclick = async () => {
+      const s = $("#fetch-replies-status"); s.textContent = "拉取中…（连 Lark IMAP，约需 5-15 秒）";
+      const res = await fetch("/api/replies/fetch", { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error) { s.textContent = "失败: " + res.error; return; }
+      if (res.baseline) { s.textContent = "首次已建立基线（只处理今后的新回复）"; }
+      else s.textContent = `拉取 ${res.fetched}，入库 ${res.ingested}，匹配线索 ${res.matched}`;
+      renderReplies(); loadStats(); loadList();
+    };
+
+    // 发信设置
+    $("#btn-sendcfg").onclick = async () => {
+      const c = await fetch("/api/settings/sending").then(r=>r.json());
+      $("#cfg-limit").value = c.daily_send_limit;
+      $("#cfg-company").value = c.company_name || "";
+      $("#cfg-address").value = c.company_address || "";
+      $("#cfg-website").value = c.company_website || "";
+      $("#cfg-selling").value = c.selling_points || "";
+      $("#cfg-chatscript").value = c.chat_script || "";
+      _chatScript = c.chat_script || DEFAULT_CHAT;
+      const fu = await fetch("/api/settings/followup").then(r=>r.json());
+      $("#fu-enabled").checked = !!fu.enabled;
+      $("#fu-delay").value = fu.delay_days;
+      $("#fu-engaged-delay").value = fu.engaged_delay_days;
+      $("#fu-max").value = fu.max_followups;
+      $("#sendcfg-overlay").classList.add("show");
+    };
+    $("#cancel-sendcfg").onclick = () => $("#sendcfg-overlay").classList.remove("show");
+    $("#save-sendcfg").onclick = async () => {
+      $("#sendcfg-result").textContent = "保存中…";
+      const res = await fetch("/api/settings/sending", { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ daily_send_limit:Number($("#cfg-limit").value), company_name:$("#cfg-company").value, company_address:$("#cfg-address").value, company_website:$("#cfg-website").value, selling_points:$("#cfg-selling").value, chat_script:$("#cfg-chatscript").value }) }).then(r=>r.json());
+      await fetch("/api/settings/followup", { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ enabled:$("#fu-enabled").checked, delay_days:Number($("#fu-delay").value), engaged_delay_days:Number($("#fu-engaged-delay").value), max_followups:Number($("#fu-max").value) }) });
+      if (res.ok) _chatScript = $("#cfg-chatscript").value || DEFAULT_CHAT;
+      $("#sendcfg-result").textContent = res.ok ? "已保存" : ("错误: "+(res.error||""));
+    };
+
+    // 飞书通知设置
+    $("#btn-notify").onclick = async () => {
+      const c = await fetch("/api/settings/notify").then(r=>r.json());
+      $("#notify-status").innerHTML = c.configured
+        ? `✅ 已连接飞书机器人（webhook 已配置${c.hasSecret?"，含签名校验":""}）。可点「发送测试卡片」验证。`
+        : `⚠️ 还没配 webhook —— 在飞书群建「自定义机器人」，把 Webhook 地址发给管理员。配好前不会推送。`;
+      $("#ntf-enabled").checked = !!c.enabled;
+      $("#ntf-score").value = c.highScoreMin;
+      $("#ntf-result").textContent = "";
+      $("#notify-overlay").classList.add("show");
+    };
+    $("#ntf-close").onclick = () => $("#notify-overlay").classList.remove("show");
+    $("#ntf-save").onclick = async () => {
+      $("#ntf-result").textContent = "保存中…";
+      const res = await fetch("/api/settings/notify", { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ enabled:$("#ntf-enabled").checked, highScoreMin:Number($("#ntf-score").value) }) }).then(r=>r.json());
+      $("#ntf-result").textContent = res.ok ? "已保存" : ("错误: "+(res.error||""));
+    };
+    $("#ntf-test").onclick = async () => {
+      $("#ntf-result").textContent = "发送中…";
+      const res = await fetch("/api/notify/test", { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      $("#ntf-result").textContent = res.ok ? "已发送，去飞书群看卡片 ✅" : ("失败: "+(res.error||""));
+    };
+
+    // 客户画像
+    $("#btn-profile").onclick = async () => {
+      const { profile } = await fetch("/api/settings/profile").then(r=>r.json());
+      $("#profile-input").value = profile;
+      $("#profile-overlay").classList.add("show");
+    };
+    $("#cancel-profile").onclick = () => $("#profile-overlay").classList.remove("show");
+    $("#save-profile").onclick = async () => {
+      const profile = $("#profile-input").value;
+      $("#profile-result").textContent = "保存中…";
+      const res = await fetch("/api/settings/profile", { method:"POST",
+        headers:{"content-type":"application/json"}, body:JSON.stringify({profile}) }).then(r=>r.json());
+      $("#profile-result").textContent = res.ok ? "已保存" : ("错误: " + (res.error||""));
+    };
+
+    // ===== 数据看板 =====
+    const FUNNEL_STAGES = [
+      ["new","新导入","#3d4351"], ["analyzed","已分析","#3a5a86"], ["pending","待审核","#3a5a86"],
+      ["approved","已批准","#2f9e6d"], ["queued","待发","#2f9e6d"], ["sent","已发送","#2f6fd6"],
+      ["replied","已回复","#37c98a"], ["no_reply","无回复","#7a6a3a"],
+      ["unsubscribed","已退订","#8a4a44"], ["bounced","退信","#8a4a44"], ["blacklisted","黑名单","#c0392b"],
+      ["ignored","已忽略","#555"],
+    ];
+    const pct = (x) => (x*100).toFixed(x>=0.1?0:1) + "%";
+
+    function funnelBars(funnel){
+      const max = Math.max(1, ...FUNNEL_STAGES.map(([k])=>funnel[k]||0));
+      return FUNNEL_STAGES.map(([k,label,color])=>{
+        const n = funnel[k]||0;
+        return `<div class="frow">
+          <span class="muted">${label}</span>
+          <div class="fbar-track"><div class="fbar" style="width:${(n/max*100).toFixed(1)}%;background:${color}"></div></div>
+          <span style="text-align:right">${n}</span></div>`;
+      }).join("");
+    }
+
+    function miniBars(items, labelFn, color){
+      if(!items || !items.length) return '<div class="muted" style="padding:8px 0">暂无数据</div>';
+      const max = Math.max(1, ...items.map(i=>i.n));
+      return items.map(i=>`<div class="frow" style="grid-template-columns:118px 1fr 34px">
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(labelFn(i))}">${labelFn(i)}</span>
+        <div class="fbar-track" style="height:16px"><div class="fbar" style="width:${(i.n/max*100).toFixed(1)}%;background:${color}"></div></div>
+        <span class="muted" style="text-align:right">${i.n}</span></div>`).join("");
+    }
+
+    // 近14天双序列迷你柱状图（纯内联 SVG）
+    function trendSVG(daily){
+      const W=560, H=132, padL=8, padR=8, padT=10, padB=22, n=daily.length;
+      const maxV = Math.max(1, ...daily.map(d=>Math.max(d.sent,d.replied)));
+      const plotH = H-padT-padB, groupW = (W-padL-padR)/n, bw = Math.min(9, groupW/2-1.6);
+      const y0 = H-padB;
+      const yOf = v => y0 - (v/maxV)*plotH;
+      let bars = "";
+      daily.forEach((d,i)=>{
+        const cx = padL + groupW*i + groupW/2;
+        const md = d.date.slice(5);
+        const sx = cx - bw - 1, rx = cx + 1;
+        if (d.sent>0)    bars += `<rect x="${sx.toFixed(1)}" y="${yOf(d.sent).toFixed(1)}" width="${bw.toFixed(1)}" height="${(y0-yOf(d.sent)).toFixed(1)}" fill="#2f6fd6" rx="1"><title>${md} 发送 ${d.sent}</title></rect>`;
+        if (d.replied>0) bars += `<rect x="${rx.toFixed(1)}" y="${yOf(d.replied).toFixed(1)}" width="${bw.toFixed(1)}" height="${(y0-yOf(d.replied)).toFixed(1)}" fill="#37c98a" rx="1"><title>${md} 回复 ${d.replied}</title></rect>`;
+        if (i%3===0 || i===n-1) bars += `<text x="${cx.toFixed(1)}" y="${H-7}" font-size="9" fill="#9aa3b2" text-anchor="middle">${md}</text>`;
+      });
+      return `<div class="dash-legend"><span><i style="background:#2f6fd6"></i>每日发送</span><span><i style="background:#37c98a"></i>每日回复</span><span class="muted" style="margin-left:auto">峰值 ${maxV}</span></div>
+        <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+          <line x1="${padL}" y1="${y0}" x2="${W-padR}" y2="${y0}" stroke="#2a2f3a" stroke-width="1"/>
+          ${bars}
+        </svg>`;
+    }
+
+    // 主内容视图切换：list(线索列表) / today(今日待办整页) / dashboard(数据看板整页)
+    window.showMainView = (v) => {
+      const list = document.getElementById('v-list'), page = document.getElementById('v-page'), found = document.getElementById('v-found');
+      if (!list || !page) return;
+      list.style.display='none'; page.style.display='none'; if(found) found.style.display='none';
+      if (v === 'list' || v === 'due') { list.style.display=''; page.innerHTML=''; }   // 批③B due=列表视图，但左栏高亮在导航项
+      else if (v === 'found') { if(found) found.style.display=''; page.innerHTML=''; }
+      else { page.style.display=''; }
+      activeView = v;              // #42 记录当前视图
+      refreshNavHighlight();       // #42 左栏高亮跟随视图切换
+    };
+    // 批A#5 可复用确认弹窗：返回 Promise<boolean>。遮罩点击/Esc=取消，Enter=确认。替代原生 confirm()。
+    function uiConfirm(opts){
+      opts = opts || {};
+      return new Promise(resolve => {
+        const ov = document.createElement('div');
+        ov.className = 'cd-overlay';
+        ov.innerHTML = `<div class="cd-card" role="dialog" aria-modal="true">
+          <div class="cd-title">${esc(opts.title||'确认操作')}</div>
+          <div class="cd-body">${esc(opts.body||'').replace(/\n/g,'<br>')}</div>
+          <div class="cd-actions">
+            <button class="cd-cancel" type="button">${esc(opts.cancelText||'取消')}</button>
+            <button class="cd-ok ${opts.danger?'cd-danger':''}" type="button">${esc(opts.confirmText||'确认')}</button>
+          </div></div>`;
+        document.body.appendChild(ov);
+        const close = (v) => { ov.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+        const onKey = (e) => { if(e.key==='Escape'){ e.preventDefault(); close(false); } else if(e.key==='Enter'){ e.preventDefault(); close(true); } };
+        ov.querySelector('.cd-cancel').onclick = () => close(false);
+        ov.querySelector('.cd-ok').onclick = () => close(true);
+        ov.addEventListener('click', (e) => { if(e.target===ov) close(false); });
+        document.addEventListener('keydown', onKey);
+        setTimeout(()=>{ const ok=ov.querySelector('.cd-ok'); if(ok) ok.focus(); }, 30);
+      });
+    }
+    // 4 个整页共用的顶部返回栏：← 返回列表 + 页名 + 副标题
+    function pageHeader(title, sub){
+      return `<div class="pg-head"><button class="btn-ghost" onclick="showMainView('list')">← 返回列表</button><div class="pg-titlewrap"><span class="pg-title">${title}</span>${sub?`<span class="pg-sub">${sub}</span>`:''}</div></div>`;
+    }
+    async function openDashboard(){
+      showMainView('dashboard');
+      $("#v-page").innerHTML = pageHeader('📊 数据看板','获客漏斗与关键指标') + `<p class="hint">加载中…</p>`;
+      const d = await fetch("/api/dashboard").then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (d.error){ $("#v-page").innerHTML = pageHeader('📊 数据看板','') + `<p class="hint">加载失败：${esc(d.error)}</p>`; return; }
+      const sb = d.scoreBuckets||{}, r = d.rates||{}, f = d.funnel||{}, F = s => f[s]||0;
+      const hi = (sb.b80||0);   // #43 高分统一 ≥80（与今日待办卡片一致）
+      const kpi = (n,l,color) => `<div class="kpi-card"><div class="kpi-n"${color?` style="color:${color}"`:''}>${n}</div><div class="kpi-l">${l}</div></div>`;
+      // 批A#4 比率类 KPI：分母(已发送)<30 时灰显 + 标注"样本小 n=X"，别用醒目色误导
+      const smallN = (d.sentLeads||0) < 30;
+      const rateKpi = (val,label,color) => smallN
+        ? `<div class="kpi-card"><div class="kpi-n" style="color:var(--muted)">${val}</div><div class="kpi-l">${label} <span class="hint">样本小 n=${d.sentLeads||0}</span></div></div>`
+        : kpi(val,label,color);
+      // #47 6 级转化漏斗：后端累计口径（funnelLevels，单调递减、转化%≤100、条宽用累计值/顶端基数）
+      const levels = d.funnelLevels || [];
+      const maxN = Math.max(1, ...levels.map(x=>x.n));
+      let worst='', worstP=101;
+      const fnHtml = levels.map((lv,i)=>{
+        const conv = (lv.conv!=null) ? lv.conv : null;
+        if (conv!==null && conv<worstP){ worstP=conv; worst=`${levels[i-1].label}→${lv.label}`; }
+        return `<div class="fn-row"><span class="muted">${lv.label}</span><div class="fn-track"><div class="fn-fill" style="width:${(lv.n/maxN*100).toFixed(1)}%"></div></div><span>${lv.n}${conv!==null?` <span class="muted">· ${conv}%</span>`:''}</span></div>`;
+      }).join('');
+      // #47 线索状态分布（当前计数，不套百分比）
+      const SD = [['new','🆕 新导入'],['analyzed','已分析'],['pending','待审核'],['approved','已批准'],['queued','待发送'],
+        ['sent','已发送'],['__viewed__','已查看'],['replied','已回复'],['won','已下单'],['ignored','已忽略'],
+        ['unsubscribed','已退订'],['bounced','退信'],['blacklisted','黑名单']];
+      const sdHtml = SD.map(([k,l])=>{ const n = k==='__viewed__' ? (d.viewed||0) : F(k); return `<div class="sd-cell"><span class="sd-n">${n}</span><span class="sd-l">${l}</span></div>`; }).join('');
+      // 近 14 天 3 色柱（新增/发信/回复）+ 日期轴
+      const dl = d.daily||[]; const tmax = Math.max(1, ...dl.map(x=>Math.max(x.neu||0,x.sent||0,x.replied||0)));
+      const trend = `<div style="display:flex;align-items:flex-end;gap:3px;height:84px">${dl.map(x=>`<div title="${x.date} 新增${x.neu||0}·发信${x.sent}·回复${x.replied}" style="flex:1;display:flex;align-items:flex-end;gap:1px;height:100%">
+        <div style="flex:1;background:#2f6fd6;height:${((x.neu||0)/tmax*100).toFixed(0)}%;min-height:1px"></div>
+        <div style="flex:1;background:#c9820a;height:${(x.sent/tmax*100).toFixed(0)}%;min-height:1px"></div>
+        <div style="flex:1;background:#37c98a;height:${(x.replied/tmax*100).toFixed(0)}%;min-height:1px"></div></div>`).join('')}</div>
+        <div style="display:flex;gap:3px;margin-top:3px">${dl.map((x,i)=>`<div style="flex:1;text-align:center;font-size:8px;color:var(--muted)">${i%2===0?esc(x.date.slice(5)):''}</div>`).join('')}</div>
+        <div class="hint" style="margin-top:5px"><span style="color:#2f6fd6">■</span> 新增　<span style="color:#c9820a">■</span> 发信　<span style="color:#37c98a">■</span> 回复</div>`;
+      $("#v-page").innerHTML = pageHeader('📊 数据看板','获客漏斗 · 关键指标 · 行动建议') + `
+        ${actionPanelHtml(d.actions, '📌 现在最该做')}
+        <div class="kpi-row">${kpi(d.total,'线索总数')}${kpi(d.analyzedCount||0,'已分析')}${kpi(d.sentLeads||0,'已触达(家)')}${rateKpi(pct(r.reply),'回复率','#37c98a')}${rateKpi(pct(r.unsub),'退订率','#e0946a')}${rateKpi(pct(r.bounce),'退信率','#e07a6a')}${kpi(d.noEmailCount||0,'缺邮箱','#e0946a')}${kpi(hi,'高分线索(≥80)','#e0b56a')}</div>
+        <div class="db-cols">
+          <div class="db-card"><div class="k muted" style="margin-bottom:8px">转化漏斗（累计口径）</div>${fnHtml}${worst?`<div class="hint" style="margin-top:8px">掉点最狠：<b style="color:var(--amber)">${worst}</b>（转化 ${worstP}%）</div>`:''}</div>
+          <div class="db-card"><div class="k muted" style="margin-bottom:8px">近 14 天趋势</div>${trend}</div>
+        </div>
+        <div class="db-card" style="margin-top:12px"><div class="k muted" style="margin-bottom:8px">线索状态分布（当前计数）</div><div class="sd-grid">${sdHtml}</div></div>
+        <div class="db-cols" style="margin-top:12px">
+          <div class="db-card"><div class="k muted" style="margin-bottom:8px">按国家 Top10</div>${miniBars((d.byCountry||[]).slice(0,10), i=>esc(countryName(i.v)), "#2f6fd6")}</div>
+          <div class="db-card"><div class="k muted" style="margin-bottom:8px">按分类</div>${miniBars((d.byCategory||[]).slice(0,8), i=>esc(i.v), "#2f9e6d")}</div>
+        </div>`;
+    }
+    // #47 行动建议：数据看板 + 今日待办共用的渲染 + 跳转
+    function actionPanelHtml(actions, title){
+      const rows = (actions||[]).length
+        ? (actions||[]).map(a=>`<div class="act-row"><span class="act-text">${esc(a.text)}</span>${a.cta?`<button class="act-btn" onclick="dashAction('${esc(a.cta.action)}')">${esc(a.cta.label)} →</button>`:''}</div>`).join('')
+        : `<div class="hint" style="padding:4px 0">✅ 暂无紧急事项——继续找客户 / 发信即可。</div>`;
+      return `<div class="act-panel"><div class="act-title">${esc(title)}</div>${rows}</div>`;
+    }
+    window.dashAction = (a) => {
+      if (a==='send'){ showMainView('list'); const b=document.getElementById('btn-send'); if(b) b.click(); }
+      else if (a==='replies'){ const b=document.getElementById('btn-replies'); if(b) b.click(); }
+      else if (a==='findmail'){ showMainView('list'); const b=document.getElementById('btn-findmail'); if(b) b.click(); }
+      else if (a && a.indexOf('group:')===0){ gotoGroup(a.slice(6)); }
+    };
+    window.closeDashboard = () => showMainView("list");
+    $("#btn-dashboard").onclick = openDashboard;
+    $("#dashboard-overlay").onclick = (e) => { if (e.target.id==="dashboard-overlay") closeDashboard(); };
+
+    // ===== 今日待办作战台 =====
+    window.closeToday = () => showMainView("list");
+    window.openLeadFromToday = (id) => { if (!id) return; closeToday(); openDetail(id); };
+    function todaySection(title, items, render){
+      return `<div class="dash-sec">${title} <span class="muted" style="font-weight:400">(${items.length})</span></div>` +
+        (items.length ? `<div>${items.map(render).join("")}</div>` : `<div class="muted" style="padding:6px 0">暂无</div>`);
+    }
+    function todayItem(id, main, sub){
+      return `<div class="tl-row" style="cursor:pointer;justify-content:space-between" onclick="openLeadFromToday(${id})">
+        <span style="font-size:13px">${main}</span>${sub?`<span class="muted" style="font-size:12px">${sub}</span>`:""}</div>`;
+    }
+    async function openToday(){
+      showMainView('today');
+      $("#v-page").innerHTML = pageHeader('📋 今日待办','一屏看清该干嘛') + `<p class="hint">加载中…</p>`;
+      const d = await fetch("/api/today").then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (d.error){ $("#v-page").innerHTML = pageHeader('📋 今日待办','') + `<p class="hint">加载失败：${esc(d.error)}</p>`; return; }
+      const nm = l => `${esc(l.company_name)||esc(hostOf(l.website||""))||("#"+l.id)}`;
+      const clicks = (d.engagedToday||[]).filter(l=>l.has_click);
+      const card = (cls, head, items, rowFn, empty) => `<div class="td-card ${cls}"><div class="td-head">${head} <span class="td-count">${items.length}</span></div><div>${items.length?items.map(rowFn).join(''):`<div class="hint" style="padding:6px 2px">${empty}</div>`}</div></div>`;
+      const rowA = (id, main, action, fn) => `<div class="td-row" onclick="openLeadFromToday(${id})"><span class="td-main">${main}</span><button class="td-act" onclick="event.stopPropagation();${fn}">${action}</button></div>`;
+      $("#v-page").innerHTML = pageHeader('📋 今日待办','点条目进详情，点动作直接处理')
+        + actionPanelHtml(d.actions, '🚀 现在就能推进（存量活儿）')   // #47 顶部：把存量活儿摆出来+一键按钮（与看板共用引擎）
+        + `<div class="td-grid">
+        ${card('td-danger','🔥 未处理热回复', d.hotReplies||[], r=>rowA(r.lead_id||0, `${esc(r.company_name)||esc(r.from_email)||"(未知)"}${r.summary?` — ${esc(r.summary)}`:''}`, '看回复', `openLeadFromToday(${r.lead_id||0})`), '暂无热回复')}
+        ${card('td-warn','🔥 今天有参与点击', clicks, l=>rowA(l.id, nm(l), '趁热跟进', `openLeadWarm(${l.id})`), '今天暂无点击')}
+        ${card('','🔔 今天该跟进', d.dueFollowups||[], l=>rowA(l.id, `${nm(l)}${l.next_action?` — ${esc(l.next_action)}`:''}`, '去处理', `openLeadFromToday(${l.id})`), '今天没有到期跟进')}
+        ${card('',`⭐ 新高分线索（≥${d.highScoreMin}）`, d.highScore||[], l=>rowA(l.id, `${nm(l)} · ${l.match_score}分`, '去看', `openLeadFromToday(${l.id})`), '暂无新高分')}
+      </div>`;
+    }
+    $("#btn-today").onclick = openToday;
+    $("#today-overlay").onclick = (e) => { if (e.target.id==="today-overlay") closeToday(); };
+
+    // 导入
+    $("#btn-import").onclick = () => $("#import-overlay").classList.add("show");
+
+    // 顶栏「⚙设置▾」与工具栏「更多▾」下拉：点开合、互斥、外点/选项关闭
+    function wireDropdown(btnId, ddId){
+      const btn = $("#"+btnId), dd = $("#"+ddId);
+      if (!btn || !dd) return;
+      btn.onclick = (e) => { e.stopPropagation(); const open = dd.classList.contains("show");
+        document.querySelectorAll(".dd-menu.show").forEach(m => m.classList.remove("show"));
+        if (!open) dd.classList.add("show"); };
+      dd.querySelectorAll(".dd-item").forEach(it => it.addEventListener("click", () => dd.classList.remove("show")));
+    }
+    wireDropdown("btn-settings", "settings-dd");
+    wireDropdown("btn-more", "acq-more-dd");
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".settings-menu") && !e.target.closest(".dd-wrap"))
+        document.querySelectorAll(".dd-menu.show").forEach(m => m.classList.remove("show"));
+    });
+    $("#cancel-import").onclick = () => $("#import-overlay").classList.remove("show");
+    $("#do-import").onclick = async () => {
+      const csv = $("#csv-input").value;
+      $("#import-result").textContent = "导入中…";
+      const res = await fetch("/api/leads/import", { method:"POST",
+        headers:{"content-type":"application/json"}, body:JSON.stringify({csv}) }).then(r=>r.json());
+      if (res.error) { $("#import-result").textContent = "错误: " + res.error; return; }
+      $("#import-result").textContent = `新增 ${res.inserted}，跳过（重复/空）${res.skipped}`;
+      loadStats(); loadList(); loadFacets();
+    };
+
+    let t; $("#q").oninput = (e) => { clearTimeout(t); query=e.target.value;
+      t=setTimeout(loadList, 250); };
+    $("#detail-overlay").onclick = (e) => { if (e.target.id==="detail-overlay") closeDetail(); };
+
+    function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+    // 显示当前登录用户（admin.tejoy.com 经 Cloudflare Access 登录时有邮箱）
+    fetch("/api/me").then(r=>r.json()).then(m=>{
+      if (m && m.email) $("#whoami").innerHTML = `👤 ${esc(m.email)} · <a href="/cdn-cgi/access/logout">退出</a>`;
+    }).catch(()=>{});
+
+    // 预加载一键开聊话术（用于 WhatsApp 预填 / 复制）
+    fetch("/api/settings/sending").then(r=>r.json()).then(c=>{ if (c && c.chat_script) _chatScript = c.chat_script; }).catch(()=>{});
+
+    loadStats(); loadFacets(); loadList();
+    openToday();   // #40 进后台默认视图 = 今日待办整页（列表已在后台加载好，← 返回列表 可随时切回）
+  </script>
+</body>
+</html>

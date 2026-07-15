@@ -1,0 +1,11 @@
+node_modules/
+.dev.vars
+.wrangler/
+.env
+*.log
+dist/
+
+# 密钥：别问，别加。.cf-token 是 Cloudflare API token（曾差点被提交进库）
+.cf-token
+*.token
+.secrets/
