@@ -159,10 +159,15 @@
     /* 批A#5 可复用确认弹窗（遮罩+居中卡片），替代原生 confirm() */
     .cd-overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:9999; padding:20px; animation:cdFade .12s ease; }
     @keyframes cdFade { from{opacity:0} to{opacity:1} }
-    .cd-card { background:var(--surface-2); border:1px solid var(--border); border-radius:12px; max-width:420px; width:100%; padding:18px 20px; box-shadow:0 14px 44px rgba(0,0,0,.5); }
-    .cd-title { font-size:15px; font-weight:700; margin-bottom:8px; }
-    .cd-body { font-size:13px; color:var(--text); line-height:1.6; margin-bottom:16px; }
-    .cd-actions { display:flex; justify-content:flex-end; gap:10px; }
+    .cd-card { background:var(--surface-2); border:1px solid var(--border); border-radius:12px; max-width:460px; width:100%; padding:18px 20px; box-shadow:0 14px 44px rgba(0,0,0,.5); }
+    .cd-card-danger { border-color:#7a3128; }                                  /* 破坏性操作：边框先示警 */
+    .cd-title { font-size:15px; font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:7px; }
+    .cd-ticon { font-size:15px; line-height:1; }
+    .cd-body { font-size:13px; color:var(--text); line-height:1.65; margin-bottom:16px; }
+    .cd-body b { color:#bcdcff; font-weight:600; }                             /* 把"对哪 N 条做什么"顶出来 */
+    .cd-li { padding-left:2px; color:var(--muted); font-size:12.5px; line-height:1.75; }   /* 「· 」次要说明降一级 */
+    .cd-warn { color:var(--amber); font-weight:600; margin-top:4px; }
+    .cd-actions { display:flex; justify-content:flex-end; gap:10px; align-items:center; }
     .cd-actions button { padding:7px 16px; border-radius:7px; font-size:13px; cursor:pointer; transition:filter .15s ease, border-color .15s ease; }
     .cd-cancel { background:var(--bg); border:1px solid var(--border); color:var(--text); }
     .cd-cancel:hover { border-color:#3d4351; }
@@ -1856,9 +1861,20 @@
       return new Promise(resolve => {
         const ov = document.createElement('div');
         ov.className = 'cd-overlay';
-        ov.innerHTML = `<div class="cd-card" role="dialog" aria-modal="true">
-          <div class="cd-title">${esc(opts.title||'确认操作')}</div>
-          <div class="cd-body">${esc(opts.body||'').replace(/\n/g,'<br>')}</div>
+        // 批③E 排版：先 esc、再做受控转换 —— **粗体**（点出"对哪 N 条做什么"）、「· 」行缩进成要点、
+        // 「⚠️ 」行标警示色。顺序不能反：必须 esc 在前、转换在后，否则等于开 XSS 口子。
+        const fmt = (s) => esc(s||'')
+          .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+          .split('\n')
+          .map(line => {
+            const t = line.trim();
+            if (t.startsWith('·')) return `<div class="cd-li">${line}</div>`;
+            if (t.startsWith('⚠️')) return `<div class="cd-warn">${line}</div>`;
+            return `<div>${line || '&nbsp;'}</div>`;
+          }).join('');
+        ov.innerHTML = `<div class="cd-card${opts.danger?' cd-card-danger':''}" role="dialog" aria-modal="true">
+          <div class="cd-title">${opts.danger?'<span class="cd-ticon">⚠️</span>':''}${esc(opts.title||'确认操作')}</div>
+          <div class="cd-body">${fmt(opts.body)}</div>
           <div class="cd-actions">
             <button class="cd-cancel" type="button">${esc(opts.cancelText||'取消')}</button>
             <button class="cd-ok ${opts.danger?'cd-danger':''}" type="button">${esc(opts.confirmText||'确认')}</button>
