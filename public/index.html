@@ -386,7 +386,7 @@
         <span class="muted" id="batch-status" style="margin-left:auto"></span>
       </div>
       <div id="hdrmenu" class="hdrmenu"></div>
-      <div id="hs-banner" class="hs-banner" style="display:none"></div>
+      <!-- 批③D：绿横幅已撤出列表页（提示搬进待办事项、动作归待审批格） -->
       <!-- 批③C 分格工具栏：每格 = 这一格的出口动作（靠什么排空），由 renderGroupTools() 按 current 渲染。
            全部页/已成交 无工具栏。选中类动作未选时禁用；全量类动作始终可用。 -->
       <div id="group-tools" class="bulk-bar" style="display:none"></div>
@@ -751,7 +751,7 @@
       document.querySelectorAll(".tab").forEach(el =>
         el.onclick = () => { current = el.dataset.k; dueMode = false; showMainView('list'); loadStats(); loadList(); });   // 点漏斗格=退出待跟进视图
       refreshNavHighlight();   // #42 侧栏重渲后校正高亮（跟随 activeView，而非只看 current）
-      loadHighScoreBanner();
+      // 批③D：绿横幅已撤，无需再加载
     }
     // #42 左栏高亮唯一真源：视图=某导航页→点亮该 side-nav 并清空漏斗 active；视图=列表/详情→点亮 current 漏斗 tab、清空 side-nav
     function refreshNavHighlight(){
@@ -765,22 +765,9 @@
     window.gotoGroup = (k) => { current = k; showMainView('list'); loadStats(); loadList(); };
 
     // A3 高分待发横幅：≥70分·已打分·有邮箱·未压制 的数量 + 「批量批准 Top N」（不自动发）
-    async function loadHighScoreBanner(){
-      const el = $("#hs-banner"); if (!el) return;
-      const d = await fetch("/api/high-score-ready").then(r=>r.json()).catch(()=>({count:0}));
-      const n = d.count || 0;
-      if (!n) { el.style.display = "none"; el.innerHTML = ""; return; }
-      el.style.display = "flex";
-      el.innerHTML = `<span>🎯 你有 <b>${n}</b> 个高分客户可发送（≥70分 · 已打分 · 有邮箱 · 未压制）</span>` +
-        `<button class="btn-green" id="hs-approve">批量批准 Top ${n}</button><span class="hint" id="hs-msg"></span>`;
-      $("#hs-approve").onclick = async () => {
-        if (!(await uiConfirm({ title:'批量批准高分线索', body:`把这 ${n} 个高分线索批量置为「已批准」？\n（不自动发送；发送仍走「发送已批准」按每日上限）`, confirmText:'批量批准' }))) return;
-        $("#hs-approve").disabled = true; $("#hs-msg").textContent = "批准中…";
-        const r = await fetch("/api/high-score-ready/approve", { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
-        $("#hs-msg").textContent = r.error ? ("失败："+r.error) : `✅ 已批准 ${r.approved} 个`;
-        loadStats(); loadList(); loadFacets();
-      };
-    }
+    // 批③D：列表页绿横幅(#hs-banner)已撤 —— 提示搬进「待办事项」的行动建议
+    // （🎯 X 家高分可批准 → 去待审批），批准动作变成「待审批」格的「≥70有邮箱→一键全批准」。
+    // 列表页只回答"这一格靠什么排空"，不再挂跨页横幅。
 
     // 筛选参数（tab 分组 + 搜索 + 国家/类型/邮箱/评分）
     function filterQuery() {

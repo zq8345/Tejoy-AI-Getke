@@ -150,6 +150,11 @@ async function buildActionSuggestions(env: Env): Promise<{
   const replied = F("replied"), bounced = F("bounced"), unsub = F("unsubscribed");
   const readyCount = F("approved") + F("queued");
   const reviewCount = F("analyzed") + F("pending");
+  // 批③D：原列表页绿横幅（≥70分·已打分·有邮箱·未压制 → 批量批准 Top N）的提示搬到这里，
+  // 只提示 + 跳「待审批」格；批准动作已变成待审批格的「≥70有邮箱→一键全批准」（同一 HIGH_SCORE_READY_WHERE）
+  const highReady = (await db.prepare(
+    `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id = l.id WHERE ${HIGH_SCORE_READY_WHERE}`
+  ).first<{ n: number }>())?.n || 0;
   const rate = (x: number) => (sentLeads > 0 ? x / sentLeads : 0);
   // 累计漏斗（同 #43 口径）求最狠掉点
   const wonC = F("won"), replyC = F("replied") + wonC;
@@ -168,6 +173,8 @@ async function buildActionSuggestions(env: Env): Promise<{
   if (replied > 0) acts.push({ pri: 100, text: `${replied} 条回复待跟进`, cta: { label: "去回复箱", action: "replies" } });
   if (readyCount > 20) acts.push({ pri: 90, text: `${readyCount} 家待发送，今天群发`, cta: { label: "群发开发信", action: "send" } });
   if (highNoSend > 0) acts.push({ pri: 80, text: `还有 ${highNoSend} 家高分（≥80）没发开发信`, cta: { label: "去待发送", action: "group:ready" } });
+  // D：原绿横幅的提示（≥70·有邮箱·未压制 可批准）——只提示+跳待审批，动作在那一格里
+  if (highReady > 0) acts.push({ pri: 78, text: `🎯 ${highReady} 家高分可批准（≥70分 · 有邮箱 · 未压制）`, cta: { label: "去待审批", action: "group:review" } });
   if (reviewCount > 0) acts.push({ pri: 76, text: `${reviewCount} 家已打分待审批`, cta: { label: "去审核", action: "group:review" } });
   if (highNoEmail > 0) acts.push({ pri: 70, text: `${highNoEmail} 家高分还没邮箱`, cta: { label: "去补邮箱", action: "findmail" } });
   if (bounceRate > 0.03) acts.push({ pri: 60, text: `退信率 ${(bounceRate * 100).toFixed(1)}% 偏高，邮箱质量差，建议收紧补邮箱来源`, cta: { label: "看退信/黑名单", action: "group:blacklisted" } });
