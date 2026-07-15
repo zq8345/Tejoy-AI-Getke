@@ -203,6 +203,23 @@
     /* 数据看板 */
     .kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px; }  /* #47 8 张 KPI → 2 行 4 列 */
     .kpi-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+    /* 批④ 待办事项 = 分诊台：按紧急度排的一列，0 的不显示，每条一句人话 + 一个跳转 */
+    .tri-list { display:flex; flex-direction:column; gap:10px; }
+    .tri-row { display:flex; align-items:center; gap:12px; background:var(--panel); border:1px solid var(--border);
+               border-left:3px solid var(--border); border-radius:10px; padding:13px 15px; transition:border-color .15s ease; }
+    .tri-row:hover { border-color:#3d4351; }
+    .tri-row.tri-hot  { border-left-color:#c0392b; }   /* 🔥 最急：有人回你了 */
+    .tri-row.tri-warm { border-left-color:var(--amber); }
+    .tri-row.tri-warn { border-left-color:var(--amber); background:#2a2114; }
+    .tri-icon { font-size:19px; line-height:1; flex-shrink:0; }
+    .tri-text { flex:1; min-width:0; font-size:14px; display:flex; flex-direction:column; gap:2px; }
+    .tri-text b { color:#bcdcff; font-size:15px; }
+    .tri-sub { font-size:12px; color:var(--muted); }
+    .tri-go { flex-shrink:0; background:var(--blue); border:none; color:#fff; font-size:12.5px; padding:7px 14px;
+              border-radius:7px; cursor:pointer; white-space:nowrap; transition:filter .15s ease; }
+    .tri-go:hover { filter:brightness(1.12); }
+    .tri-empty { text-align:center; padding:38px 16px; color:var(--text); font-size:15px; background:var(--panel);
+                 border:1px solid var(--border); border-radius:10px; line-height:2; }
     /* #47 行动建议面板（数据看板 + 今日待办共用）+ 线索状态分布 */
     .act-panel { background:var(--surface-2); border:1px solid var(--border); border-left:3px solid var(--blue); border-radius:10px; padding:11px 14px; margin-bottom:14px; }
     .act-title { font-size:13px; font-weight:700; margin-bottom:6px; }
@@ -1970,23 +1987,36 @@
       return `<div class="tl-row" style="cursor:pointer;justify-content:space-between" onclick="openLeadFromToday(${id})">
         <span style="font-size:13px">${main}</span>${sub?`<span class="muted" style="font-size:12px">${sub}</span>`:""}</div>`;
     }
+    // ===== 批④ 待办事项 = 分诊台 =====
+    // 只回答一个问题：今天先干哪一件？ → 按紧急度排 · 0 的不显示 · 每条=一句人话+一个跳转 · 这里不做动作。
+    // 删掉了：4 张固定卡片（0 也占半屏）、「新高分线索」列表（与待审批同一批人，重复）、
+    //        「322家待发送」那条假数（口径已换成真能发的 sendable）、页内动作按钮。
     async function openToday(){
       showMainView('today');
-      $("#v-page").innerHTML = pageHeader('📋 今日待办','一屏看清该干嘛') + `<p class="hint">加载中…</p>`;
+      $("#v-page").innerHTML = pageHeader('📋 待办事项','今天先干哪一件') + `<p class="hint">加载中…</p>`;
       const d = await fetch("/api/today").then(r=>r.json()).catch(e=>({error:String(e)}));
-      if (d.error){ $("#v-page").innerHTML = pageHeader('📋 今日待办','') + `<p class="hint">加载失败：${esc(d.error)}</p>`; return; }
-      const nm = l => `${esc(l.company_name)||esc(hostOf(l.website||""))||("#"+l.id)}`;
+      if (d.error){ $("#v-page").innerHTML = pageHeader('📋 待办事项','') + `<p class="hint">加载失败：${esc(d.error)}</p>`; return; }
       const clicks = (d.engagedToday||[]).filter(l=>l.has_click);
-      const card = (cls, head, items, rowFn, empty) => `<div class="td-card ${cls}"><div class="td-head">${head} <span class="td-count">${items.length}</span></div><div>${items.length?items.map(rowFn).join(''):`<div class="hint" style="padding:6px 2px">${empty}</div>`}</div></div>`;
-      const rowA = (id, main, action, fn) => `<div class="td-row" onclick="openLeadFromToday(${id})"><span class="td-main">${main}</span><button class="td-act" onclick="event.stopPropagation();${fn}">${action}</button></div>`;
-      $("#v-page").innerHTML = pageHeader('📋 今日待办','点条目进详情，点动作直接处理')
-        + actionPanelHtml(d.actions, '🚀 现在就能推进（存量活儿）')   // #47 顶部：把存量活儿摆出来+一键按钮（与看板共用引擎）
-        + `<div class="td-grid">
-        ${card('td-danger','🔥 未处理热回复', d.hotReplies||[], r=>rowA(r.lead_id||0, `${esc(r.company_name)||esc(r.from_email)||"(未知)"}${r.summary?` — ${esc(r.summary)}`:''}`, '看回复', `openLeadFromToday(${r.lead_id||0})`), '暂无热回复')}
-        ${card('td-warn','🔥 今天有参与点击', clicks, l=>rowA(l.id, nm(l), '趁热跟进', `openLeadWarm(${l.id})`), '今天暂无点击')}
-        ${card('','🔔 今天该跟进', d.dueFollowups||[], l=>rowA(l.id, `${nm(l)}${l.next_action?` — ${esc(l.next_action)}`:''}`, '去处理', `openLeadFromToday(${l.id})`), '今天没有到期跟进')}
-        ${card('',`⭐ 新高分线索（≥${d.highScoreMin}）`, d.highScore||[], l=>rowA(l.id, `${nm(l)} · ${l.match_score}分`, '去看', `openLeadFromToday(${l.id})`), '暂无新高分')}
-      </div>`;
+      const serper = d.serper||{};
+      const overBudget = serper.budget!=null && serper.usedToday>=serper.budget && serper.budget>0;
+      // 紧急度从高到低；n=0 的整条不渲染
+      const items = [
+        { n:(d.hotReplies||[]).length, cls:'tri-hot',  icon:'🔥', text:n=>`<b>${n}</b> 条客户回复还没处理`,        sub:'有人主动回你了——这是最该先看的', go:'去已回复', fn:"gotoGroup('replied')" },
+        { n:clicks.length,             cls:'tri-warm', icon:'👀', text:n=>`今天有 <b>${n}</b> 家点了你的开发信`,    sub:'点过链接=有意向，趁热跟进转化最高', go:'去已查看', fn:"gotoGroup('viewed')" },
+        { n:(d.dueFollowups||[]).length, cls:'',       icon:'🔔', text:n=>`<b>${n}</b> 家今天该跟进`,              sub:'你自己定的下一步日期到了', go:'去待跟进', fn:"openDue()" },
+        { n:d.sendable||0,             cls:'',         icon:'📤', text:n=>`<b>${n}</b> 家现在就能发`,              sub:'已批准 · 有邮箱 · ≥60分 · 未压制（真能发出去的）', go:'去待发送', fn:"gotoGroup('ready')" },
+        { n:d.reviewCount||0,          cls:'',         icon:'✅', text:n=>`<b>${n}</b> 家已打分待审批`,            sub:'审完才能进待发送', go:'去待审批', fn:"gotoGroup('review')" },
+        { n:overBudget?1:0,            cls:'tri-warn', icon:'⚠️', text:()=>`今日 Serper 搜索预算已用满（${serper.usedToday}/${serper.budget}）`, sub:'自动搜索已停，明天恢复；要继续可去找客户页调高预算', go:'去找客户', fn:"openDiscover()" },
+      ].filter(x=>x.n>0);
+      const rows = items.length
+        ? items.map(x=>`<div class="tri-row ${x.cls}">
+            <span class="tri-icon">${x.icon}</span>
+            <span class="tri-text">${x.text(x.n)}<span class="tri-sub">${esc(x.sub)}</span></span>
+            <button class="tri-go" onclick="${x.fn}">${esc(x.go)} →</button>
+          </div>`).join('')
+        : `<div class="tri-empty">🎉 今天没有待处理的事。<br><span class="hint">想加线索去「🎯 找客户」；想看健康度去「📊 数据看板」。</span></div>`;
+      $("#v-page").innerHTML = pageHeader('📋 待办事项','今天先干哪一件 · 按紧急度排 · 点进去在那一格里处理')
+        + `<div class="tri-list">${rows}</div>`;
     }
     $("#btn-today").onclick = openToday;
     $("#today-overlay").onclick = (e) => { if (e.target.id==="today-overlay") closeToday(); };

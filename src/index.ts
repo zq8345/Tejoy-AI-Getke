@@ -663,7 +663,22 @@ app.get("/api/today", async (c) => {
     "ORDER BY a.match_score DESC, l.id DESC LIMIT 50"
   ).bind(hsMin).all()).results;
   const sug = await buildActionSuggestions(c.env);   // #47 今日待办顶部「现在就能推进」复用同一引擎
-  return c.json({ dueFollowups, hotReplies, engagedToday, highScore, highScoreMin: hsMin, actions: sug.actions });
+  // 批④ 待办事项=分诊台：这里只给"每类还剩几件"的真实计数，页面按紧急度排、0 的不显示、只跳转不做动作。
+  // ⭐「X 家能发」必须是真能发的口径 = approved 且 有邮箱 且 ≥60分（与 sendApprovedBatch 的取批条件一致）。
+  //    旧版直接拿 approved 总数当"待发送"→ 显示 322 而真值 41，是用户最恼火的那个谎。
+  const sendable = (await db.prepare(
+    `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id = l.id
+      WHERE l.status='approved' AND a.match_score >= ${APPROVE_MIN_SCORE}
+        AND l.email IS NOT NULL AND l.email != ''
+        AND lower(l.email) NOT IN (SELECT email FROM suppressed_emails)`
+  ).first<{ n: number }>())?.n || 0;
+  const serper = await getSerperUsage(c.env);
+  return c.json({
+    dueFollowups, hotReplies, engagedToday, highScore, highScoreMin: hsMin, actions: sug.actions,
+    sendable,                       // 批④：真能发的家数（approved+有邮箱+≥60+未压制）
+    reviewCount: sug.reviewCount,   // 待审批
+    serper,                         // ⚠️系统警报：Serper 预算
+  });
 });
 
 // ---- CSV 导入（去重）----
