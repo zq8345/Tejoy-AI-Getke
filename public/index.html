@@ -391,15 +391,9 @@
       </div>
       <div id="hdrmenu" class="hdrmenu"></div>
       <div id="hs-banner" class="hs-banner" style="display:none"></div>
-      <div id="bulk-bar" class="bulk-bar" style="display:none">
-        <span>已选 <b id="bulk-n">0</b> 条</span>
-        <button class="btn-green mini" onclick="bulkStatus('approved','批准')">批准</button>
-        <button class="btn-amber mini" onclick="bulkStatus('ignored','忽略')">忽略</button>
-        <button class="btn-red mini" onclick="bulkStatus('blacklisted','加黑名单')">加黑</button>
-        <button class="mini" onclick="bulkAnalyze()">重新分析</button>
-        <button class="mini" onclick="clearSel()">取消</button>
-        <span class="hint" id="bulk-msg"></span>
-      </div>
+      <!-- 批③C 分格工具栏：每格 = 这一格的出口动作（靠什么排空），由 renderGroupTools() 按 current 渲染。
+           全部页/已成交 无工具栏。选中类动作未选时禁用；全量类动作始终可用。 -->
+      <div id="group-tools" class="bulk-bar" style="display:none"></div>
       <table>
         <thead><tr><th><input type="checkbox" id="sel-all" title="全选当前筛选" onclick="event.stopPropagation();toggleSelAll(this.checked)"> 公司</th><th>评分</th><th>阶段</th><th>邮箱</th><th>分类</th><th>国家</th><th class="chcol">LinkedIn</th><th class="chcol">WhatsApp</th><th class="chcol">Facebook</th><th class="chcol">Instagram</th><th class="chcol">电话</th><th>录入时间</th></tr></thead>
         <tbody id="rows"></tbody>
@@ -837,35 +831,169 @@
     window.toggleSelAll = (checked) => { _loadedIds.forEach(id => { if(checked) selectedIds.add(id); else selectedIds.delete(id); }); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=checked); refreshBulkBar(); };
     window.clearSel = () => { selectedIds.clear(); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=false); const sa=$("#sel-all"); if(sa)sa.checked=false; refreshBulkBar(); };
     function syncSelAll(){ const sa=$("#sel-all"); if(!sa) return; sa.checked = _loadedIds.length>0 && _loadedIds.every(id=>selectedIds.has(id)); }
-    function refreshBulkBar(){ const bar=$("#bulk-bar"); if(!bar) return; const n=selectedIds.size; const bn=$("#bulk-n"); if(bn)bn.textContent=n; bar.style.display = n? "flex":"none"; }
-    window.bulkStatus = async (status, label) => {
-      const ids=[...selectedIds].map(Number); if(!ids.length) return;
-      if(!(await uiConfirm({ title:`批量「${label}」`, body:`把选中的 ${ids.length} 条批量「${label}」？\n（退订/黑名单/退信等不可违规复发的会自动跳过，不整批失败）`, confirmText:label, danger:(label==='加黑名单') }))) return;
-      $("#bulk-msg").textContent="处理中…";
-      const r=await fetch("/api/leads/bulk-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ids,status})}).then(r=>r.json()).catch(e=>({error:String(e)}));
-      if(r.error){ $("#bulk-msg").textContent="失败: "+r.error; return; }
-      $("#bulk-msg").textContent=`✅ 更新 ${r.updated}${(r.skipped&&r.skipped.length)?`，跳过 ${r.skipped.length}`:""}`;
-      clearSel(); loadStats(); loadList(); loadFacets();
+    // ===== 批③C 分格工具栏：每格 = 这一格的出口动作 =====
+    // sel:true = 选中类（未选中时禁用，标题带条数）；否则 = 全量类（对当前格全体，始终可用）
+    const GROUP_TOOLS = {
+      unscored: [
+        { t:"立即分析选中", cls:"primary", sel:true, fn:"toolAnalyzeSel()" },
+        { t:"忽略选中", cls:"btn-amber", sel:true, fn:"toolStatusSel('ignored','忽略')" },
+      ],
+      review: [
+        { t:"≥70有邮箱 → 一键全批准", cls:"btn-green", fn:"toolApproveHighScore()" },
+        { t:"缺邮箱 → 批量补邮箱", cls:"", fn:"toolFindMails()" },
+        { t:"<60分 → 一键全忽略", cls:"btn-amber", fn:"toolIgnoreLowScore()" },
+        { t:"批准选中", cls:"btn-green", sel:true, fn:"toolStatusSel('approved','批准')" },
+        { t:"忽略选中", cls:"btn-amber", sel:true, fn:"toolStatusSel('ignored','忽略')" },
+      ],
+      ready: [
+        { t:"全部发送（受每日上限）", cls:"btn-green", fn:"toolSendAll()" },
+        { t:"发送选中", cls:"btn-green", sel:true, fn:"toolSendSel()" },
+        { t:"退回待审批", cls:"", sel:true, fn:"toolStatusSel('analyzed','退回待审批')" },
+      ],
+      sent: [
+        { t:"跟进选中", cls:"primary", sel:true, fn:"toolFollowupSel(false)" },
+        { t:"放弃选中 → 已忽略", cls:"btn-amber", sel:true, fn:"toolStatusSel('ignored','放弃')" },
+      ],
+      viewed: [
+        { t:"趁热跟进选中", cls:"btn-amber", sel:true, fn:"toolFollowupSel(true)" },
+        { t:"放弃选中 → 已忽略", cls:"", sel:true, fn:"toolStatusSel('ignored','放弃')" },
+      ],
+      replied: [
+        { t:"标记成交", cls:"btn-won", sel:true, fn:"toolStatusSel('won','标记成交')" },
+        { t:"婉拒归档 → 已忽略", cls:"btn-amber", sel:true, fn:"toolStatusSel('ignored','婉拒归档')" },
+      ],
+      won: [],          // 终点，无出口动作
+      ignored: [
+        { t:"恢复到待审批", cls:"primary", sel:true, fn:"toolStatusSel('analyzed','恢复到待审批')" },
+      ],
+      blacklisted: [
+        { t:"转已忽略", cls:"btn-amber", sel:true, fn:"toolStatusSel('ignored','转已忽略')" },
+      ],
     };
-    window.bulkAnalyze = async () => {
+    // all 页无工具栏（只保留筛选）；won 无出口动作
+    function renderGroupTools(){
+      const bar = $("#group-tools"); if(!bar) return;
+      const defs = (dueMode || current==='all') ? [] : (GROUP_TOOLS[current] || []);
+      if(!defs.length){ bar.style.display="none"; bar.innerHTML=""; return; }
+      const n = selectedIds.size;
+      bar.style.display = "flex";
+      bar.innerHTML = `<span>已选 <b id="bulk-n">${n}</b> 条</span>`
+        + defs.map(d=>`<button class="${d.cls} mini"${d.sel&&!n?" disabled title='先勾选线索'":""} onclick="${d.fn}">${esc(d.t)}${d.sel&&n?`（${n}）`:""}</button>`).join("")
+        + (n?`<button class="mini" onclick="clearSel()">取消选择</button>`:"")
+        + `<span class="hint" id="bulk-msg"></span>`;
+    }
+    const refreshBulkBar = renderGroupTools;   // 兼容原有调用点
+    const toolMsg = (h) => { const m=$("#bulk-msg"); if(m) m.innerHTML = h; };
+    const afterMutate = () => { clearSel(); loadStats(); loadList(); loadFacets(); };
+    // E：跳过原因摘要（把服务端 skipped 的原因聚合成人话）
+    function skipSummary(skipped){
+      if(!skipped || !skipped.length) return "";
+      const by = {}; skipped.forEach(s=>{ const k=String(s.reason||"其它"); by[k]=(by[k]||0)+1; });
+      return "\n跳过 " + skipped.length + " 条：" + Object.entries(by).map(([k,v])=>`${v} 条「${k}」`).join("；");
+    }
+    // 选中类：改状态（服务端 A1 护栏 + M3 合规护栏会拒并给原因）
+    window.toolStatusSel = async (status, label) => {
       const ids=[...selectedIds].map(Number); if(!ids.length) return;
-      const N = ids.length;
-      if(!(await uiConfirm({ title:'批量重新分析', body:`对选中的 ${N} 条重新 AI 分析？（逐条抓官网+打分+写信，约每条 10-30 秒）`, confirmText:'开始分析' }))) return;
-      const bar=$("#bulk-bar"), msg=$("#bulk-msg");
-      // 立刻切"分析中"态：醒目色 + 禁用按钮 + 进度条 0/N（别等第一条完成才有反馈）
-      bar.classList.add("analyzing");
-      bar.querySelectorAll("button").forEach(b=>b.disabled=true);
-      const prog = pct => `⏳ 已分析 <b>${pct}</b>/${N}（约每条 10-30 秒，请稍候）<span class="bulk-prog"><span class="bulk-prog-fill" style="width:${Math.round(pct/N*100)}%"></span></span>`;
-      msg.innerHTML = prog(0).replace("已分析","开始分析");
-      let ok=0, fail=0;
+      const gate = status==='approved' ? "\n（服务端会拒掉 缺邮箱／未打分／<60分 的，并逐条说明原因）" : "\n（退订/黑名单/退信等合规终态会自动跳过，不整批失败）";
+      if(!(await uiConfirm({ title:`「${label}」${ids.length} 条`, body:`将对**选中的 ${ids.length} 条**执行「${label}」。${gate}`, confirmText:label, danger:(status==='blacklisted') }))) return;
+      toolMsg("处理中…");
+      const r=await fetch("/api/leads/bulk-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ids,status})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if(r.error){ toolMsg("失败: "+esc(r.error)); return; }
+      const sk = skipSummary(r.skipped);
+      toolMsg(`✅ 成功 ${r.updated} 条${sk?`　<span class="muted">${esc(sk.replace(/^\n/,""))}</span>`:""}`);
+      if(sk) await uiConfirm({ title:`完成：成功 ${r.updated} 条`, body:`「${label}」已完成。${sk}`, confirmText:"知道了", cancelText:"关闭" });
+      afterMutate();
+    };
+    // 待分析：立即分析选中（逐条真跑 AI，带进度）
+    window.toolAnalyzeSel = async () => {
+      const ids=[...selectedIds].map(Number); if(!ids.length) return;
+      const N=ids.length;
+      if(!(await uiConfirm({ title:`立即分析 ${N} 条`, body:`将对**选中的 ${N} 条**逐条抓官网 + AI 打分 + 写开发信。\n约每条 10-30 秒，期间请勿关页面。`, confirmText:"开始分析" }))) return;
+      const bar=$("#group-tools"); bar.classList.add("analyzing"); bar.querySelectorAll("button").forEach(b=>b.disabled=true);
+      const prog = k => `⏳ 已分析 <b>${k}</b>/${N}<span class="bulk-prog"><span class="bulk-prog-fill" style="width:${Math.round(k/N*100)}%"></span></span>`;
+      toolMsg(prog(0)); let fail=0;
       for(let i=0;i<N;i++){
         const r=await fetch(`/api/leads/${ids[i]}/analyze`,{method:"POST"}).then(r=>r.json()).catch(e=>({error:String(e)}));
-        if(r && !r.error && r.ok!==false) ok++; else fail++;
-        msg.innerHTML = prog(i+1);
+        if(!(r && !r.error && r.ok!==false)) fail++;
+        toolMsg(prog(i+1));
       }
       bar.classList.remove("analyzing");
-      const s=$("#batch-status"); if(s) s.textContent = `✅ 批量分析完成：已分析 ${N} 条${fail?`（失败 ${fail}）`:""}`;
-      clearSel(); loadStats(); loadList(); loadFacets();
+      const s=$("#batch-status"); if(s) s.textContent = `✅ 分析完成 ${N} 条${fail?`（失败 ${fail}）`:""}`;
+      afterMutate();
+    };
+    // 待审批：≥70有邮箱 一键全批准（复用既有端点：≥70 + 有邮箱 + 未压制，上限 500）
+    window.toolApproveHighScore = async () => {
+      const d = await fetch("/api/high-score-ready").then(r=>r.json()).catch(()=>({count:0}));
+      const n = d.count||0;
+      if(!n){ toolMsg("当前没有「≥70分 且 有邮箱 且 未压制」的线索可批准。"); return; }
+      if(!(await uiConfirm({ title:`一键全批准 ${n} 条`, body:`将把**全部 ${n} 条**「≥70分 · 有邮箱 · 未压制」的线索置为「已批准」（进待发送）。\n不会自动发信——发送仍要你去待发送页点，且受每日上限。`, confirmText:`批准 ${n} 条` }))) return;
+      toolMsg("批准中…");
+      const r = await fetch("/api/high-score-ready/approve",{method:"POST"}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      toolMsg(r.error?("失败: "+esc(r.error)):`✅ 已批准 ${r.approved} 条`);
+      afterMutate();
+    };
+    // 待审批：缺邮箱 批量补邮箱（Hunter 作为弹窗里的选项，对应 find-batch 的 useHunter）
+    window.toolFindMails = async () => {
+      const st = await fetch("/api/hunter/status").then(r=>r.json()).catch(()=>({}));
+      const remain = st.available!=null ? st.available : "?";
+      const useHunter = await uiConfirm({
+        title:"批量补邮箱",
+        body:`先用**免费抓取**（读官网联系页）给缺邮箱的线索补邮箱，一次最多 30 家。\n\n要不要**同时用 Hunter 兜底**？Hunter 对免费抓不到的公司按域名查，**每家 1 积分**（本月剩余 ${remain}）。`,
+        confirmText:"用 Hunter 兜底（花积分）", cancelText:"只用免费抓取",
+      });
+      toolMsg(useHunter?"补邮箱中（含 Hunter）…":"补邮箱中（仅免费抓取）…");
+      const r = await fetch("/api/emails/find-batch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({limit:30, useHunter})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if(r.error){ toolMsg("失败: "+esc(r.error)); return; }
+      toolMsg(`✅ 补上邮箱 ${r.found}/${r.processed} 家${r.hunterUsed?`（Hunter 花 ${r.hunterUsed} 积分）`:""}`);
+      afterMutate();
+    };
+    // 待审批：<60分 一键全忽略（先按筛选取出该格 <60 的 id，再走 bulk-status）
+    window.toolIgnoreLowScore = async () => {
+      const p = new URLSearchParams({ group:"review", scoreMin:"0", scoreMax:"60" });
+      const { leads=[] } = await fetch(`/api/leads?${p}`).then(r=>r.json()).catch(()=>({leads:[]}));
+      const ids = leads.map(l=>Number(l.id));
+      if(!ids.length){ toolMsg("当前待审批里没有 <60 分的线索。"); return; }
+      if(!(await uiConfirm({ title:`一键全忽略 ${ids.length} 条`, body:`将把待审批里**全部 ${ids.length} 条 <60 分**的线索置为「已忽略」。\n它们低于发信门槛（≥60）本来也发不出去；忽略后可在「已忽略」格恢复。`, confirmText:`忽略 ${ids.length} 条`, danger:true }))) return;
+      toolMsg("忽略中…");
+      const r=await fetch("/api/leads/bulk-status",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ids,status:"ignored"})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      toolMsg(r.error?("失败: "+esc(r.error)):`✅ 已忽略 ${r.updated} 条${skipSummary(r.skipped)?`，${esc(skipSummary(r.skipped).replace(/^\n/,""))}`:""}`);
+      afterMutate();
+    };
+    // 待发送：全部发送 / 发送选中（都走 /api/send/batch，≥60门槛+每日上限+幂等+压制不绕）
+    async function doSend(ids, title, body){
+      const cfg = await fetch("/api/settings/sending").then(r=>r.json()).catch(()=>({}));
+      const cap = cfg.daily_send_limit || 50;
+      if(!(await uiConfirm({ title, body: body(cap), confirmText:"确认发送", danger:false }))) return;
+      toolMsg("发送中…（发出不可撤）");
+      const payload = ids ? { ids, limit: cap } : { limit: cap };
+      const r=await fetch("/api/send/batch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if(r.error){ toolMsg("失败: "+esc(r.error)); return; }
+      const skipped = (r.results||[]).filter(x=>!x.ok);
+      const why = skipSummary(skipped.map(x=>({reason:x.skipped||x.error||"未知"})));
+      toolMsg(`✅ 已发送 ${r.sent}/${r.processed} 封${r.capReached?"（已到今日上限）":""}`);
+      await uiConfirm({ title:`发送完成：${r.sent} 封`, body:`今日已发 ${r.sentToday}/${r.dailyLimit}。${why||""}${r.capReached?"\n⚠️ 已触及每日上限，其余明天再发。":""}`, confirmText:"知道了", cancelText:"关闭" });
+      afterMutate();
+    }
+    window.toolSendAll = () => doSend(null, "全部发送（受每日上限）",
+      cap => `将发送**全部待发送**线索（高分优先）。\n\n· 受每日上限 **${cap}** 封约束，超出的明天继续\n· <60分／退订／黑名单／已发过的 会自动跳过\n· 发出不可撤（发件 hello@tejoy.net）`);
+    window.toolSendSel = () => { const ids=[...selectedIds].map(Number); if(!ids.length) return;
+      doSend(ids, `发送选中 ${ids.length} 条`,
+        cap => `将只发送**选中的 ${ids.length} 条**。\n\n· 受每日上限 **${cap}** 封约束\n· 其中 <60分／缺邮箱／退订／黑名单／已发过的 会自动跳过\n· 发出不可撤（发件 hello@tejoy.net）`); };
+    // 已发送/已查看：跟进选中（engaged 的自动用「趁热」暖变体，共用 /api/followup/run）
+    window.toolFollowupSel = async (warm) => {
+      const ids=[...selectedIds].map(Number); if(!ids.length) return;
+      const cfg = await fetch("/api/settings/followup").then(r=>r.json()).catch(()=>({}));
+      if(cfg.enabled === false){ toolMsg("自动跟进开关当前是关的（设置→发信设置里开）。"); return; }
+      const label = warm ? "趁热跟进" : "跟进";
+      if(!(await uiConfirm({ title:`${label}选中 ${ids.length} 条`, body:`将给**选中的 ${ids.length} 条**发跟进信（AI 按原信改写；点过链接的自动用「趁热」暖变体）。\n\n· 冷却期未到 / 已跟够 ${cfg.max||3} 次 / 已回复 的会自动跳过\n· 受每日发信上限约束\n· 发出不可撤`, confirmText:`发${label}` }))) return;
+      toolMsg("跟进发送中…");
+      const r=await fetch("/api/followup/run",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ids, limit:50})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if(r.error){ toolMsg("失败: "+esc(r.error)); return; }
+      if(r.disabled){ toolMsg("自动跟进开关是关的，未发送。"); return; }
+      const skipped=(r.results||[]).filter(x=>!x.ok);
+      toolMsg(`✅ 已发跟进 ${r.sent}/${r.processed} 封`);
+      await uiConfirm({ title:`${label}完成：${r.sent} 封`, body:`选中 ${ids.length} 条中实际发出 ${r.sent} 封。${ids.length-r.processed>0?`\n${ids.length-r.processed} 条未进入发送（冷却未到／已跟够次数／状态不符）。`:""}${skipSummary(skipped.map(x=>({reason:x.skipped||x.error||"未知"})))}`, confirmText:"知道了", cancelText:"关闭" });
+      afterMutate();
     };
     function toggleScoreSort(){
       // 批③C：原「最近参与」互斥逻辑已随该按钮删除
@@ -907,7 +1035,8 @@
         `<option value="">全部评分</option>` +
         `<option value="70-100">70-100分 (${sb.b70_100||0})</option>` +
         `<option value="40-70">40-70分 (${sb.b40_70||0})</option>` +
-        `<option value="0-40">0-40分 (${sb.b0_40||0})</option>`;
+        `<option value="0-40">0-40分 (${sb.b0_40||0})</option>` +
+        `<option value="0-60">⚠️ 低于门槛 &lt;60分（发不出去）</option>`;   // 批③C 待审批靠它分堆
       sSel.value = scur;
     }
 

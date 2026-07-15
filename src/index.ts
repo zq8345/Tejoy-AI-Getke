@@ -876,9 +876,12 @@ app.post("/api/settings/followup", async (c) => {
 });
 // ---- 无回复跟进：手动跑一批 ----
 app.post("/api/followup/run", async (c) => {
-  const body = await c.req.json<{ limit?: number }>().catch(() => ({}));
+  const body = await c.req.json<{ limit?: number; ids?: number[] }>().catch(() => ({}));
   const limit = Math.min(Math.max(Number(body.limit) || 10, 1), 50);
-  const out = await sendFollowupBatch(c.env, limit);
+  // 批③C：传 ids 只跟进选中的（走同一条 sendFollowupBatch —— 开关/冷却/次数/每日上限/幂等/压制一个不绕；
+  // engaged 的自动用「趁热」暖变体，所以「跟进选中」与「趁热跟进选中」共用本端点）
+  const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter(Number.isFinite))].slice(0, 500) : [];
+  const out = await sendFollowupBatch(c.env, limit, ids.length ? ids : undefined);
   return c.json(out);
 });
 

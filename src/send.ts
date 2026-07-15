@@ -217,7 +217,10 @@ export async function sendWarmFollowupNow(env: Env, lead: any, fullText: string)
 }
 
 // 批量跟进：对"已发但 N 天无回复"的线索发跟进信（需开关开启，遵守每日上限与最多跟进次数）
-export async function sendFollowupBatch(env: Env, requested: number): Promise<{ processed: number; sent: number; results: SendOutcome[]; disabled?: boolean; capReached?: boolean; dailyLimit: number; sentToday: number }> {
+// ids 传入时只跟进这些选中的（仍受全部闸门：followup_enabled 开关 + status='sent' + 有邮箱 +
+// 累计跟进 <= followup_max + 冷却天数未到不发 + 每日上限 + deliverEmail 幂等 + 压制名单）。
+// engaged(点过链接)的会自动用「趁热」暖变体——所以「跟进选中」和「趁热跟进选中」共用这一条路径。
+export async function sendFollowupBatch(env: Env, requested: number, ids?: number[]): Promise<{ processed: number; sent: number; results: SendOutcome[]; disabled?: boolean; capReached?: boolean; dailyLimit: number; sentToday: number }> {
   if ((await getSetting(env, "followup_enabled", "0")) !== "1") {
     return { processed: 0, sent: 0, results: [], disabled: true, dailyLimit: 0, sentToday: 0 };
   }
@@ -233,11 +236,14 @@ export async function sendFollowupBatch(env: Env, requested: number): Promise<{ 
   //  · engaged（曾点击=有意向）→ 更短的 engagedDelayDays、从 last_engaged_at 起算、用「趁热」暖变体；
   //  · 非 engaged → 原 delayDays、从 last_sent 起算、用常规跟进。
   // 都要 status=sent、有邮箱、累计已发 <= maxFollowups。已回复/退订/黑名单/退信 因 status 非 sent 已自动排除。engaged 优先（趁热）。
-  const rows = await env.DB.prepare(
+  // 批③C：传了 ids 就只在同一条 WHERE 上再加 id IN (...) —— 开关/冷却/次数/上限/幂等/压制全部照旧，只是范围收窄到选中项
+  const idList = Array.isArray(ids) ? ids.filter((n) => Number.isFinite(n)) : [];
+  const idFilter = idList.length ? ` AND l.id IN (${idList.map(() => "?").join(",")})` : "";
+  const sql =
     `SELECT l.*, COUNT(e.id) AS sent_count, MAX(e.sent_at) AS last_sent,
             MAX(CASE WHEN e.clicked_at IS NOT NULL THEN 1 ELSE 0 END) AS has_click
        FROM leads l JOIN emails e ON e.lead_id = l.id AND e.status='sent'
-      WHERE l.status='sent' AND l.email IS NOT NULL AND l.email != ''
+      WHERE l.status='sent' AND l.email IS NOT NULL AND l.email != ''${idFilter}
       GROUP BY l.id
      HAVING sent_count <= ?
         AND (
@@ -246,8 +252,9 @@ export async function sendFollowupBatch(env: Env, requested: number): Promise<{ 
           (has_click = 0 AND MAX(e.sent_at) <= datetime('now', ?))
         )
       ORDER BY has_click DESC, last_sent ASC
-      LIMIT ?`
-  ).bind(maxFollowups, `-${engagedDelayDays} days`, `-${delayDays} days`, take).all();
+      LIMIT ?`;
+  const rows = await env.DB.prepare(sql)
+    .bind(...idList, maxFollowups, `-${engagedDelayDays} days`, `-${delayDays} days`, take).all();
   const leads = rows.results as any[];
 
   const results: SendOutcome[] = [];
