@@ -2,6 +2,7 @@
 // 只做我们需要的：LOGIN → SELECT INBOX → UID SEARCH → UID FETCH BODY.PEEK[]
 import { connect } from "cloudflare:sockets";
 import type { Env } from "./index";
+import { assertEgressAllowed } from "./devguard";
 import { IMAP_BATCH, computeBatch } from "./imap-batch";
 export { IMAP_BATCH, computeBatch } from "./imap-batch";
 
@@ -102,6 +103,9 @@ export async function fetchNewMessages(env: Env, sinceUid: number, maxCount = IM
   const pass = env.LARK_IMAP_PASS;
   if (!pass) throw new Error("缺少 LARK_IMAP_PASS（Lark 公共邮箱的 IMAP 应用密码）");
 
+  // ⚠️ IMAP 走 cloudflare:sockets 的 connect()，**不经过 fetch** —— 全局闸门包不住它，
+  //    所以这里单独问一句。③ 号事故（本地连真 IMAP 拉到客户真信）走的正是这条路。
+  assertEgressAllowed(env, host, "IMAP connect");
   const socket = connect({ hostname: host, port }, { secureTransport: "on", allowHalfOpen: false });
   const wr = socket.writable.getWriter();
   const rd = new Reader(socket.readable.getReader());

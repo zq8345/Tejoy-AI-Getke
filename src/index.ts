@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { installDevEgressGuard, BUILD_MARKER, devGuardOn } from "./devguard";
 import { basicAuth } from "hono/basic-auth";
 import { parseCsv, mapRowToLead } from "./csv";
 import { analyzeLead, getProfile, DEFAULT_PROFILE, ensureDraft } from "./service";
@@ -36,6 +37,9 @@ export interface Env {
   LARK_IMAP_USER: string;
   LARK_IMAP_PASS: string;
   LARK_WEBHOOK_URL: string;      // 飞书群「自定义机器人」webhook（可选，配了才推送）
+  // ↓ dev 出站闸门用。**只存在于 .dev.vars**（wrangler dev 才读），生产 secrets 里没有 → 生产零影响。
+  DEV_LOCAL?: string;            // "1" = 本地进程，装出站闸门（只准出 localhost）
+  DEV_EGRESS_ALLOW?: string;     // 逗号分隔：逐个点名放行的真实主机（点名 = 明知故犯，会打横幅）
   LARK_WEBHOOK_SECRET: string;   // 飞书机器人签名密钥（可选，开了签名校验才需要）
   RESEND_WEBHOOK_SECRET: string; // Resend webhook 签名密钥（whsec_...，可选但强烈建议配）
   DEV_BYPASS_AUTH?: string;      // 仅本地 .dev.vars：跳过登录鉴权（生产无此变量）
@@ -1402,6 +1406,8 @@ app.post("/api/settings/notify", async (c) => {
   return c.json({ ok: true });
 });
 // ---- 飞书通知：发测试卡片 ----
+app.get("/api/_whoami", (c) => c.json({ marker: BUILD_MARKER, guard: devGuardOn(c.env), lark: String(c.env.LARK_WEBHOOK_URL||"").slice(0,32) }));
+
 app.post("/api/notify/test", async (c) => {
   if (!larkConfigured(c.env)) return c.json({ ok: false, error: "尚未配置 LARK_WEBHOOK_URL（把飞书机器人 webhook 发给管理员注入）" }, 400);
   const r = await larkSend(c.env, testCard(c.env.ADMIN_URL || c.env.APP_URL));
@@ -1997,4 +2003,11 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   } catch (e) { console.error("digest:", e); }
 }
 
-export default { fetch: app.fetch, scheduled };
+// ⚠️ 入口的形状必须保持"default 导出一个全是函数的对象" —— 顶层 export 非函数会让 Worker
+//    拒绝启动（`Incorrect type for map entry`），且 dry-run 抓不到。改这里必须真起 8788。
+// devguard：本地进程的出站闸门。装在入口 = fetch 和 scheduled(cron) **两条路都兜住**，
+//    不是只兜 HTTP 那条（③ 号事故就是 cron 路径推的飞书）。生产 DEV_LOCAL 不存在 → 空操作。
+export default {
+  fetch: (req: Request, env: Env, ctx: ExecutionContext) => { installDevEgressGuard(env); return app.fetch(req, env, ctx); },
+  scheduled: (event: ScheduledController, env: Env, ctx: ExecutionContext) => { installDevEgressGuard(env); return scheduled(event, env, ctx); },
+};
