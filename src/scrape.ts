@@ -1,5 +1,14 @@
 // 抓取客户官网正文：首页 + 最多几个相关子页（about/contact/products/services）
 const UA = "Mozilla/5.0 (compatible; TejoyBot/0.1; +https://tejoy.com)";
+// ⭐ 首页给足时间，子页保持紧。
+// 抽样 20 家 NMEA 线索实测：8s 超时把**真·船舶电子经销商**挡在门外——
+//   dinnteco.com 7.6s（卡在 8s 线上，时好时坏）、naocontrol.com 10.5s、
+//   wema-marine.se 12.4s（跳到 frigus.se，多一跳）。用 curl 两种 UA 探都是 200，
+//   站好好的，是我们自己超时。这解释了"第 1 遍 85 分、第 2 遍抓不到"——它们就卡在线上，抓不抓得到看运气。
+// 首页决定这条线索的生死（ok=false 直接进抓失败分支），值得多等；
+// 子页只是补充证据，抓不到就算了，保持 8s 免得一条线索拖垮整轮 cron。
+// 预算：最坏 18 + 3×8 = 42s 挂钟（旧值 32s），子请求数不变。
+const HOME_TIMEOUT_MS = 18000;
 const PAGE_TIMEOUT_MS = 8000;
 const MAX_TEXT = 8000; // 交给 LLM 的正文上限（字符）
 
@@ -26,7 +35,7 @@ export async function scrapeSite(website: string): Promise<ScrapeResult> {
   const channels: Channels = {};
   let combined = "";
 
-  const home = await fetchPage(base);
+  const home = await fetchPage(base, HOME_TIMEOUT_MS);   // 首页决定生死，给足时间（见文件头注释）
   if (!home) return { ok: false, text: "", pages: [], emails: [], channels: {}, error: "首页抓取失败" };
   visited.push(base);
   combined += `# ${base}\n${htmlToText(home)}\n\n`;
@@ -125,10 +134,10 @@ function rankEmails(emails: string[], base: string): string[] {
   return emails.sort((a, b) => score(b) - score(a));
 }
 
-async function fetchPage(url: string): Promise<string | null> {
+async function fetchPage(url: string, timeoutMs: number = PAGE_TIMEOUT_MS): Promise<string | null> {
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), PAGE_TIMEOUT_MS);
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
     const res = await fetch(url, {
       headers: { "user-agent": UA, accept: "text/html" },
       signal: ctrl.signal,
