@@ -208,10 +208,33 @@ app.get("/api/dashboard", async (c) => {
 
   // 3) 国家 / 规范分类 分布
   const byCountry = (await db.prepare(
-    "SELECT country AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country!='' GROUP BY country ORDER BY n DESC"
+    // 批④：GROUP BY UPPER(country) —— 存量遗留的小写码(us)与新写的大写(US)合并，别再出"两个美国"（写入口已在各处堵住）
+    "SELECT UPPER(country) AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country!='' GROUP BY UPPER(country) ORDER BY n DESC"
   ).all()).results;
   const byCategory = (await db.prepare(
     "SELECT customer_category AS v, COUNT(*) AS n FROM lead_analysis WHERE customer_category IS NOT NULL AND customer_category!='' GROUP BY customer_category ORDER BY n DESC"
+  ).all()).results;
+
+  // 批④：按「收件箱类型」切片（通用箱 info@/support@ · 销售箱 sales@/team@ · 个人箱）
+  // 只给 发送(唯一线索)/退订/互动 三个**计数**；比率交前端在 n>=50 时才算（与主比率同一把样本量锁）。
+  const byInbox = (await db.prepare(
+    `SELECT CASE
+        WHEN lower(substr(l.email,1,instr(l.email,'@')-1)) IN
+          ('info','support','contact','hello','admin','office','enquiries','enquiry','inquiry','inquiries','mail','general','reception','service')
+          THEN 'generic'
+        WHEN lower(substr(l.email,1,instr(l.email,'@')-1)) IN
+          ('sales','team','biz','business','partners','partner','wholesale','orders','order','marketing','purchasing','procurement')
+          THEN 'sales'
+        ELSE 'personal' END AS box,
+       COUNT(DISTINCT l.id) AS sent,
+       SUM(CASE WHEN l.status='unsubscribed' THEN 1 ELSE 0 END) AS unsub,
+       SUM(CASE WHEN l.status IN ('replied','won')
+                  OR EXISTS (SELECT 1 FROM emails e2 WHERE e2.lead_id=l.id AND e2.clicked_at IS NOT NULL)
+                THEN 1 ELSE 0 END) AS engaged
+       FROM leads l
+      WHERE l.email IS NOT NULL AND l.email!='' AND instr(l.email,'@')>1
+        AND EXISTS (SELECT 1 FROM emails e WHERE e.lead_id=l.id AND e.status='sent')
+      GROUP BY box ORDER BY sent DESC`
   ).all()).results;
 
   // 4) 近 14 天每日发送 / 回复
@@ -287,6 +310,7 @@ app.get("/api/dashboard", async (c) => {
     rates: { reply: rate(replied), bounce: rate(bounced), unsub: rate(unsubscribed) },
     byCountry,
     byCategory,
+    byInbox,        // 批④：按收件箱类型切片（受 n<50 样本量锁）
     daily,
     scoreBuckets: {
       b0: buckets?.b0 || 0, b40: buckets?.b40 || 0, b60: buckets?.b60 || 0,
@@ -391,7 +415,7 @@ app.get("/api/leads", async (c) => {
 // ---- 筛选维度可选值（国家 / 规范客户分类），供前端下拉动态生成 ----
 app.get("/api/leads/facets", async (c) => {
   const countries = await c.env.DB.prepare(
-    "SELECT country AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country != '' GROUP BY country ORDER BY n DESC"
+    "SELECT UPPER(country) AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country != '' GROUP BY UPPER(country) ORDER BY n DESC"
   ).all();
   const categories = await c.env.DB.prepare(
     "SELECT a.customer_category AS v, COUNT(*) AS n FROM lead_analysis a WHERE a.customer_category IS NOT NULL AND a.customer_category != '' GROUP BY a.customer_category ORDER BY n DESC"
@@ -712,9 +736,12 @@ app.post("/api/leads/import", async (c) => {
     }
 
     try {
+      // ⭐批④：CSV 里的两位国家码统一大写落库（英文全名等非两位值原样留给 /api/admin/normalize-countries 规整）
+      const csvCC = String(lead.country || "").trim();
+      const csvCountry = /^[a-z]{2}$/i.test(csvCC) ? csvCC.toUpperCase() : (csvCC || null);
       await c.env.DB.prepare(
         "INSERT INTO leads (company_name, website, email, country, source, keyword, status) VALUES (?, ?, ?, ?, ?, ?, 'new')"
-      ).bind(lead.company_name, lead.website, lead.email, lead.country, source, lead.keyword).run();
+      ).bind(lead.company_name, lead.website, lead.email, csvCountry, source, lead.keyword).run();
       inserted++;
     } catch (e: any) {
       errors.push(`第 ${i + 1} 行: ${e.message}`);
@@ -1208,9 +1235,11 @@ app.post("/api/inbound", async (c) => {
   const company = (b.company_name || "").trim().slice(0, 200);
   if (!company) return c.json({ error: "Company name is required" }, 400);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 200) return c.json({ error: "A valid email is required" }, 400);
-  // country 白名单：非法 → null（别信任意 POST 值）
+  // country 白名单：非法 → null（别信任意 POST 值）。cc 保持小写做白名单/展示查表；
+  // ⭐批④：落库一律大写（countryDb），别再制造 US/us 分裂
   const cc = (b.country || "").trim().toLowerCase();
   const country = COUNTRIES[cc] ? cc : null;
+  const countryDb = country ? country.toUpperCase() : null;
   const whereSell = (b.where_sell || "").trim().slice(0, 300);
   const volume = (b.monthly_volume || "").trim().slice(0, 100);
 
@@ -1256,7 +1285,7 @@ app.post("/api/inbound", async (c) => {
     await c.env.DB.prepare(
       "INSERT INTO leads (company_name, email, country, source, status, notes, next_action, next_action_date) " +
       "VALUES (?, ?, ?, 'landing', 'new', ?, '跟进落地页询盘', date('now'))"
-    ).bind(company, email, country, note.slice(0, 500)).run();
+    ).bind(company, email, countryDb, note.slice(0, 500)).run();
   }
 
   // 推飞书（压制态 / 超软限 时跳过；失败不影响入库）

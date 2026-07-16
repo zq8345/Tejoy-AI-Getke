@@ -228,10 +228,23 @@
     .act-text { font-size:13px; }
     .act-btn { flex-shrink:0; background:var(--blue); border:none; color:#fff; font-size:12px; padding:5px 12px; border-radius:6px; cursor:pointer; white-space:nowrap; transition:filter .15s ease; }
     .act-btn:hover { filter:brightness(1.12); }
-    .sd-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(84px,1fr)); gap:8px; }
-    .sd-cell { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px 6px; text-align:center; }
-    .sd-n { display:block; font-size:18px; font-weight:700; }
-    .sd-l { display:block; font-size:11px; color:var(--muted); margin-top:2px; }
+    /* 批④ 看板：样本量门槛 + 收件箱切片（.sd-* 状态分布已随该块删除） */
+    .db-note { background:#1b2430; border:1px solid #2f4a63; border-left:3px solid var(--blue); color:#cfd6e2;
+               border-radius:10px; padding:11px 14px; margin-bottom:14px; font-size:12.5px; line-height:1.7; }
+    .db-note b { color:#bcdcff; }
+    .kpi-muted { opacity:.92; }
+    .kpi-den { font-size:13px; color:var(--muted); font-weight:400; margin-left:2px; }
+    .kpi-note { display:block; font-size:10.5px; color:var(--muted); margin-top:2px; line-height:1.4; }
+    .ib-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:1px solid var(--border); }
+    .ib-row:last-child { border-bottom:0; }
+    .ib-name { font-size:13px; display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .ib-n { font-size:11px; color:var(--muted); }
+    .ib-cells { display:flex; gap:18px; flex-shrink:0; }
+    .ib-cell { text-align:right; display:flex; flex-direction:column; }
+    .ib-v { font-size:15px; font-weight:700; }
+    .ib-v.ib-muted { color:var(--muted); font-weight:600; }
+    .ib-den { font-size:11px; color:var(--muted); font-weight:400; }
+    .ib-l { font-size:10.5px; color:var(--muted); }
     .kpi-n { font-size:22px; font-weight:700; }
     .kpi-l { font-size:12px; color:var(--muted); margin-top:2px; }
     .db-cols { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
@@ -1918,11 +1931,18 @@
       const sb = d.scoreBuckets||{}, r = d.rates||{}, f = d.funnel||{}, F = s => f[s]||0;
       const hi = (sb.b80||0);   // #43 高分统一 ≥80（与今日待办卡片一致）
       const kpi = (n,l,color) => `<div class="kpi-card"><div class="kpi-n"${color?` style="color:${color}"`:''}>${n}</div><div class="kpi-l">${l}</div></div>`;
-      // 批A#4 比率类 KPI：分母(已发送)<30 时灰显 + 标注"样本小 n=X"，别用醒目色误导
-      const smallN = (d.sentLeads||0) < 30;
-      const rateKpi = (val,label,color) => smallN
-        ? `<div class="kpi-card"><div class="kpi-n" style="color:var(--muted)">${val}</div><div class="kpi-l">${label} <span class="hint">样本小 n=${d.sentLeads||0}</span></div></div>`
-        : kpi(val,label,color);
+      // ⭐批④ 样本量门槛（看板最重要的一条）：分母 n<50 → **只显示计数、不显示比率**，写明"样本不足，暂不下结论"；
+      //   n>=50 才亮比率和警戒线。理由：25% 退订率是 5/20 算的，置信区间 9%–49%，纯噪音；
+      //   那个红字会让人对着噪音焦虑、甚至去改打分标准。看板的职责是告诉你"什么时候可以下结论"，不是制造警报。
+      const N_MIN = 50, denom = d.sentLeads||0, enoughN = denom >= N_MIN;
+      const c = d.counts||{};
+      const rateKpi = (cnt, label, color, warnAt) => {
+        if (!enoughN) return `<div class="kpi-card kpi-muted"><div class="kpi-n" style="color:var(--muted)">${cnt}<span class="kpi-den">/${denom}</span></div>`
+          + `<div class="kpi-l">${label}<span class="kpi-note">样本不足，暂不下结论（n=${denom}<${N_MIN}）</span></div></div>`;
+        const rate = denom ? cnt/denom : 0, over = warnAt!=null && rate>=warnAt;
+        return `<div class="kpi-card"><div class="kpi-n" style="color:${over?'#e07a6a':color}">${pct(rate)}</div>`
+          + `<div class="kpi-l">${label}<span class="kpi-note">${cnt}/${denom}${over?` · ⚠️ 超警戒线 ${pct(warnAt)}`:''}</span></div></div>`;
+      };
       // #47 6 级转化漏斗：后端累计口径（funnelLevels，单调递减、转化%≤100、条宽用累计值/顶端基数）
       const levels = d.funnelLevels || [];
       const maxN = Math.max(1, ...levels.map(x=>x.n));
@@ -1932,11 +1952,19 @@
         if (conv!==null && conv<worstP){ worstP=conv; worst=`${levels[i-1].label}→${lv.label}`; }
         return `<div class="fn-row"><span class="muted">${lv.label}</span><div class="fn-track"><div class="fn-fill" style="width:${(lv.n/maxN*100).toFixed(1)}%"></div></div><span>${lv.n}${conv!==null?` <span class="muted">· ${conv}%</span>`:''}</span></div>`;
       }).join('');
-      // #47 线索状态分布（当前计数，不套百分比）
-      const SD = [['new','🆕 新导入'],['analyzed','已分析'],['pending','待审核'],['approved','已批准'],['queued','待发送'],
-        ['sent','已发送'],['__viewed__','已查看'],['replied','已回复'],['won','已下单'],['ignored','已忽略'],
-        ['unsubscribed','已退订'],['bounced','退信'],['blacklisted','黑名单']];
-      const sdHtml = SD.map(([k,l])=>{ const n = k==='__viewed__' ? (d.viewed||0) : F(k); return `<div class="sd-cell"><span class="sd-n">${n}</span><span class="sd-l">${l}</span></div>`; }).join('');
+      // 批④：「线索状态分布」已删 —— 与左栏漏斗是同一份数据两套叫法，且口径打架
+      //（左栏"待发送 322" vs 看板"已批准 322/待发送 0"）。**左栏是唯一真源。**
+      // 批④：按收件箱类型切片（通用箱/销售箱/个人箱），同样受 n<50 锁 —— 只有计数够了才敢比较
+      const BOX_LABEL = { generic:'通用箱 info@ / support@', sales:'销售箱 sales@ / team@', personal:'个人箱（具体某个人）' };
+      const inbox = d.byInbox||[];
+      const inboxHtml = inbox.length ? inbox.map(b=>{
+        const ok = (b.sent||0) >= N_MIN;
+        const cell = (cnt,lab) => ok
+          ? `<span class="ib-v">${pct((b.sent? cnt/b.sent : 0))}<span class="ib-den"> ${cnt}/${b.sent}</span></span><span class="ib-l">${lab}</span>`
+          : `<span class="ib-v ib-muted">${cnt}<span class="ib-den">/${b.sent}</span></span><span class="ib-l">${lab}</span>`;
+        return `<div class="ib-row"><div class="ib-name">${esc(BOX_LABEL[b.box]||b.box)}<span class="ib-n">已发 ${b.sent} 家${ok?'':`　<span class="kpi-note">样本不足(<${N_MIN})，只给计数</span>`}</span></div>
+          <div class="ib-cells"><div class="ib-cell">${cell(b.unsub||0,'退订')}</div><div class="ib-cell">${cell(b.engaged||0,'互动')}</div></div></div>`;
+      }).join('') : `<div class="hint">还没有发出去的信，暂无切片。</div>`;
       // 近 14 天 3 色柱（新增/发信/回复）+ 日期轴
       const dl = d.daily||[]; const tmax = Math.max(1, ...dl.map(x=>Math.max(x.neu||0,x.sent||0,x.replied||0)));
       const trend = `<div style="display:flex;align-items:flex-end;gap:3px;height:84px">${dl.map(x=>`<div title="${x.date} 新增${x.neu||0}·发信${x.sent}·回复${x.replied}" style="flex:1;display:flex;align-items:flex-end;gap:1px;height:100%">
@@ -1945,14 +1973,18 @@
         <div style="flex:1;background:#37c98a;height:${(x.replied/tmax*100).toFixed(0)}%;min-height:1px"></div></div>`).join('')}</div>
         <div style="display:flex;gap:3px;margin-top:3px">${dl.map((x,i)=>`<div style="flex:1;text-align:center;font-size:8px;color:var(--muted)">${i%2===0?esc(x.date.slice(5)):''}</div>`).join('')}</div>
         <div class="hint" style="margin-top:5px"><span style="color:#2f6fd6">■</span> 新增　<span style="color:#c9820a">■</span> 发信　<span style="color:#37c98a">■</span> 回复</div>`;
-      $("#v-page").innerHTML = pageHeader('📊 数据看板','获客漏斗 · 关键指标 · 行动建议') + `
-        ${actionPanelHtml(d.actions, '📌 现在最该做')}
-        <div class="kpi-row">${kpi(d.total,'线索总数')}${kpi(d.analyzedCount||0,'已分析')}${kpi(d.sentLeads||0,'已触达(家)')}${rateKpi(pct(r.reply),'回复率','#37c98a')}${rateKpi(pct(r.unsub),'退订率','#e0946a')}${rateKpi(pct(r.bounce),'退信率','#e07a6a')}${kpi(d.noEmailCount||0,'缺邮箱','#e0946a')}${kpi(hi,'高分线索(≥80)','#e0b56a')}</div>
+      // 批④ 数据看板 = 体检报告：只回答"系统健康吗、哪里漏水"，不告诉你今天干嘛（那是待办事项的活）。
+      // 已删：「现在最该做」（与待办事项完全重复）、「线索状态分布」（与左栏漏斗同数据两套叫法且口径打架）。
+      $("#v-page").innerHTML = pageHeader('📊 数据看板','系统健康 · 哪里漏水（今天干嘛去「待办事项」）') + `
+        ${enoughN?'':`<div class="db-note">📐 已发 <b>${denom}</b> 家，未达统计门槛 <b>${N_MIN}</b> —— 下面的比率只给<b>计数</b>，不下结论。
+          样本太小的比率会骗人（如 5/20 = 25% 退订，置信区间约 9%–49%，纯噪音）。先把量发上去，到 ${N_MIN}+ 再看。</div>`}
+        <div class="kpi-row">${kpi(d.total,'线索总数')}${kpi(d.analyzedCount||0,'已分析')}${kpi(d.sentLeads||0,'已触达(家)')}${kpi(d.noEmailCount||0,'缺邮箱','#e0946a')}
+          ${rateKpi(c.replied||0,'回复率','#37c98a',null)}${rateKpi(c.unsubscribed||0,'退订率','#e0946a',0.05)}${rateKpi(c.bounced||0,'退信率','#e07a6a',0.03)}${kpi(hi,'高分线索(≥80)','#e0b56a')}</div>
         <div class="db-cols">
           <div class="db-card"><div class="k muted" style="margin-bottom:8px">转化漏斗（累计口径）</div>${fnHtml}${worst?`<div class="hint" style="margin-top:8px">掉点最狠：<b style="color:var(--amber)">${worst}</b>（转化 ${worstP}%）</div>`:''}</div>
           <div class="db-card"><div class="k muted" style="margin-bottom:8px">近 14 天趋势</div>${trend}</div>
         </div>
-        <div class="db-card" style="margin-top:12px"><div class="k muted" style="margin-bottom:8px">线索状态分布（当前计数）</div><div class="sd-grid">${sdHtml}</div></div>
+        <div class="db-card" style="margin-top:12px"><div class="k muted" style="margin-bottom:8px">按收件箱类型</div>${inboxHtml}</div>
         <div class="db-cols" style="margin-top:12px">
           <div class="db-card"><div class="k muted" style="margin-bottom:8px">按国家 Top10</div>${miniBars((d.byCountry||[]).slice(0,10), i=>esc(countryName(i.v)), "#2f6fd6")}</div>
           <div class="db-card"><div class="k muted" style="margin-bottom:8px">按分类</div>${miniBars((d.byCategory||[]).slice(0,8), i=>esc(i.v), "#2f9e6d")}</div>
