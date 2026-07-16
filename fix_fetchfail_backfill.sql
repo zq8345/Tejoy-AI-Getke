@@ -68,6 +68,30 @@ SELECT COUNT(*) AS 已放回待分析
 FROM leads WHERE status = 'new' AND fetch_fail_count = 0
   AND id NOT IN (SELECT lead_id FROM lead_analysis);
 
+-- ========== 第 5 步（可选，默认注释掉）：已忽略里那 3 条 95 分的纯攻略文章 ==========
+-- 你提到"存量重扫时这类会自动归位"——**这一条我要更正一下**：cron 只捡 status='new'，
+-- 它们躺在 ignored 里，永远不会被重扫，95 分会一直挂着。要归位只能像下面这样手动放回去。
+--
+-- 但我的建议是：**别跑这一步**。理由：
+--   · 它们现在已经被正确地忽略了（人当初判断对了，尽管分数在骗人），不会被发信，没有实际危害
+--   · 放回 new → H3-v2 把它们压到 ≤30 → 它们落进「待审核」→ Joe 还得再手动忽略一次
+--     = 拿"正确地埋着"换"需要重新分诊"，净增工作量
+--   · 95 分留在 ignored 里唯一的害处是污染看板的分数分布，那是化妆品级问题
+-- 如果你就是想让存量分数干净（比如要拿分布做决策），再放开它。
+-- SELECT id, company_name, website, status FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
+-- WHERE l.status='ignored' AND a.match_score>=80
+--   AND (a.customer_type LIKE '%内容%' OR a.customer_type LIKE '%攻略%' OR a.customer_type LIKE '%博客%'
+--     OR a.customer_type LIKE '%媒体%' OR a.customer_category='其他');
+-- ↑ 先跑这个看名单。确认全是攻略/内容站、没有误伤真客户，再把下面两句放开：
+-- DELETE FROM lead_analysis WHERE lead_id IN (SELECT l.id FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
+--   WHERE l.status='ignored' AND a.match_score>=80 AND (a.customer_type LIKE '%内容%' OR a.customer_type LIKE '%攻略%'
+--     OR a.customer_type LIKE '%博客%' OR a.customer_type LIKE '%媒体%' OR a.customer_category='其他'));
+-- UPDATE leads SET status='new', fetch_fail_count=0, updated_at=datetime('now')
+--   WHERE status='ignored' AND id NOT IN (SELECT lead_id FROM lead_analysis);
+-- ⚠️ 上面这句 UPDATE 的范围条件是"ignored 且没有分析行"——如果库里本来就有别的 ignored 无分析行的线索，
+--    它们也会被一起放回。跑之前先 SELECT 数一下：
+--    SELECT COUNT(*) FROM leads WHERE status='ignored' AND id NOT IN (SELECT lead_id FROM lead_analysis);
+
 -- ========== 第 4 步（可选，默认注释掉）：连 ignored 一起捞 ==========
 -- 只有你确认"当初那批 ignored 是被假分数骗着按的"再放开。它会覆盖人工决定，所以默认不跑。
 -- UPDATE leads SET status='new', fetch_fail_count=0, updated_at=datetime('now')

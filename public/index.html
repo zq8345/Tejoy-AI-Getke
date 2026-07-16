@@ -78,6 +78,8 @@
     .st-sent { background:#12202f; color:#8fc7ff; }
     .st-send { background:#1d2b3a; color:#8fc7ff; }
     .st-new { background:#33383f; color:#cfd6e2; }
+    /* 待分析：机器还没处理完，人不用做什么 → 比「待审核」(等你审) 更暗、更安静，别抢注意力 */
+    .st-todo { background:#2b2f36; color:#8c94a3; }
     /* 渠道独立列：窄、居中；表加 min-width 让 12 列超宽时走横向滚动而非压扁 */
     .chcol { width:120px; }
     th.chcol { text-align:left; overflow:hidden; text-overflow:ellipsis; }
@@ -705,7 +707,12 @@
         return { badge:"✅ 已发信", cls:"st-sent", next:"等回复；到期自动跟进" };
       }
       if (s==='approved' || s==='queued') return { badge:"📤 待发送", cls:"st-send", next:'点"发送已批准"' };
-      return { badge:"🆕 待审核", cls:"st-new", next:"审核→批准发送" }; // new/analyzed/pending 及其它
+      // ⭐ new 和 analyzed/pending 是**两个格**，不能揉成一个徽章。
+      // 老漏斗里待分析和待审批还没分家，于是「待分析」格里每一行都写着"待审核"——
+      // 左栏说你在待分析、每行却说自己待审核，正是这次重构要消灭的那种
+      // "这个标签跟我在哪一格有什么关系"的困惑。
+      if (s==='new') return { badge:"🆕 待分析", cls:"st-todo", next:"等 AI 打分（后台每 6h 自动跑）" };
+      return { badge:"📋 待审核", cls:"st-new", next:"审核→批准发送" }; // analyzed/pending 及其它
     }
     // 联系渠道（快赢①）：把 leads.channels JSON 渲染成可点击链接
     const CHANNEL_META = { linkedin:{icon:"💼",label:"LinkedIn"}, whatsapp:{icon:"🟢",label:"WhatsApp"},
@@ -1097,7 +1104,10 @@
     }
 
     // ===== 表头内置筛选下拉 =====
-    const STAGE_OPTS = [["","全部阶段"],["new","🆕 待审核"],["approved","📤 待发送"],["sent","✅ 已发信"],["engaged","🔥 已参与"],["talking","💬 洽谈中"],["declined","❌ 已婉拒"],["won","🤝 合作中"],["dead","⛔ 黑名单/退订/退信"]];
+    // ⭐ 阶段选项必须跟 stageOf 的徽章逐字对上：下拉里选「待分析」就该只筛出徽章写着「待分析」的行。
+    //   以前一个 "new" 项同时代表 new+analyzed+pending → 按「待审核」筛会连待分析的一起筛出来。
+    //   这里的 key 必须与后端 STAGE_SQL 的 key 一致（src/index.ts 的 unscored / review）。
+    const STAGE_OPTS = [["","全部阶段"],["unscored","🆕 待分析"],["review","📋 待审核"],["approved","📤 待发送"],["sent","✅ 已发信"],["engaged","🔥 已参与"],["talking","💬 洽谈中"],["declined","❌ 已婉拒"],["won","🤝 合作中"],["dead","⛔ 黑名单/退订/退信"]];
     const CH_COLS = { ch_linkedin:["linkedin","LinkedIn"], ch_whatsapp:["whatsapp","WhatsApp"], ch_facebook:["facebook","Facebook"], ch_instagram:["instagram","Instagram"], ch_phone:["phone","电话"] };
     // 统一「漏斗=筛选」图标（Feather filter，与排序三角 ▲/▼ 明显不同形）
     const FUNNEL_SVG = `<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="21 4 3 4 10 12.5 10 19 14 21 14 12.5"/></svg>`;
@@ -1279,12 +1289,19 @@
       const canSend = scored && !!lead.email;
       // 批A#1 动作条按状态自适应
       // 批④ 详情页 = 这一家下一步做什么：动作跟"这条线索所在的格"联动，跟阶段页同一个原则，不平铺所有动作。
-      const inReview  = ['new','analyzed','pending'].includes(lead.status);  // 待分析/待审批 → 主「批准」（缺邮箱时变「补邮箱」）
+      // ⭐ 同一个根：待分析(new) 跟待审批(analyzed/pending) 不是一个格，动作也不该一样。
+      //   以前 new 也算 inReview → 待分析线索的主按钮是「✅ 批准」，可它永远点不动
+      //   （未打分过不了 A1 护栏），而真正该做的「AI 分析」却被降级到次要区。
+      //   现在：new → 主「🔍 AI 分析」。分析本身还会顺带从官网抓邮箱，所以它也先于「补邮箱」。
+      const isUnscored = lead.status === 'new';                               // 待分析 → 主「AI 分析」
+      const inReview  = ['analyzed','pending'].includes(lead.status);         // 待审批 → 主「批准」（缺邮箱时变「补邮箱」）
       const inReady   = ['approved','queued'].includes(lead.status);          // 待发送 → 主「发送」
       const isViewed  = lead.status==='sent' && !!lead.has_click;             // 已查看 → 主「趁热跟进」
       const isSent    = lead.status==='sent' && !lead.has_click;              // 已发送 → 主「安排跟进」
       const isReplied = lead.status==='replied';                              // 已回复 → 主「标记成交」+ 次「婉拒归档」
-      const preSend   = inReview || inReady;   // 未发出：确认发送/批准 这类才露出
+      // preSend 的含义是「这封信还没发出去」，待分析当然也算 —— 必须显式带上 isUnscored。
+      // （否则一条 status='new' 但有分析记录的线索，会把「推荐开发信」误显示成「已发出的开发信·已折叠」。）
+      const preSend   = isUnscored || inReview || inReady;   // 未发出：确认发送/批准 这类才露出
       // 主按钮走批③A1 同一条护栏（approveGateReason）：缺邮箱/未打分/<60 要说清原因，不另开口子
       const gateReason = !lead.email ? "缺邮箱，不能批准（先补邮箱）"
         : (a.match_score==null ? "未打分，不能批准（先 AI 分析）"
@@ -1360,11 +1377,14 @@
             </div>
           </div>
           <div class="dp-bottom">
-            <!-- 次要区：重新AI分析 / 加黑名单 收在这儿，不跟主操作抢 -->
-            <button class="btn-ghost" onclick="analyzeOne(${lead.id})">${scored?"重新 AI 分析":"🔍 AI 分析"}</button>
-            <span class="dp-sep"></span>
+            <!-- 次要区：重新AI分析 / 加黑名单 收在这儿，不跟主操作抢。
+                 待分析时「AI 分析」升为主按钮（见下），这里就不再重复出一个。 -->
+            ${isUnscored ? '' : `<button class="btn-ghost" onclick="analyzeOne(${lead.id})">${scored?"重新 AI 分析":"🔍 AI 分析"}</button>
+            <span class="dp-sep"></span>`}
             <!-- 主操作：跟这条线索所在的格联动 -->
-            ${inReview ? (!lead.email
+            ${isUnscored ? `<button class="btn-green dp-primary" onclick="analyzeOne(${lead.id})">🔍 AI 分析</button>
+                   <span class="hint">还没打分，先让 AI 看一眼官网（后台每 6h 也会自动跑）</span>`
+              : inReview ? (!lead.email
                 ? `<button class="btn-green dp-primary" onclick="findMail(${lead.id},false)">✉️ 补邮箱</button>
                    <button class="btn-amber" onclick="findMail(${lead.id},true)" title="Hunter 按域名查，每家 1 积分">Hunter 找(1积分)</button>`
                 : `<button class="btn-green dp-primary" ${gateReason?`disabled title="${esc(gateReason)}"`:""} onclick="approveAndReview(${lead.id})">✅ 批准</button>`)

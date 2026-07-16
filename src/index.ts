@@ -404,7 +404,11 @@ app.get("/api/leads", async (c) => {
   const ENGAGED = "EXISTS (SELECT 1 FROM emails e WHERE e.lead_id=l.id AND (e.opened_at IS NOT NULL OR e.clicked_at IS NOT NULL))";
   const LAST_CAT = "(SELECT r.category FROM replies r WHERE r.lead_id=l.id ORDER BY r.id DESC LIMIT 1)";
   const STAGE_SQL: Record<string, string> = {
-    new: "l.status IN ('new','analyzed','pending')",
+    // ⭐ 待分析(new) 与 待审核(analyzed/pending) 必须分开：这是阶段列筛选下拉的数据源，
+    //   以前一个 'new' 键把三个状态揉在一起 → 用户按「待审核」筛会筛出一堆还没打分的，
+    //   跟前端 stageOf 的徽章对不上。key 必须与前端 STAGE_OPTS 一致。
+    unscored: "l.status='new'",
+    review: "l.status IN ('analyzed','pending')",
     approved: "l.status IN ('approved','queued')",
     sent: `l.status='sent' AND NOT ${ENGAGED}`,
     engaged: `l.status='sent' AND ${ENGAGED}`,
