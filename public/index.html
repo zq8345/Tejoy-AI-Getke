@@ -203,6 +203,22 @@
     /* 数据看板 */
     .kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px; }  /* #47 8 张 KPI → 2 行 4 列 */
     .kpi-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+    /* 批④ 找客户：积压刹车条 —— 与"本轮将抓多少"并排，别只顾鼓励进货 */
+    .fc-backlog { background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--amber);
+                  border-radius:10px; padding:11px 14px; margin-bottom:14px; }
+    .bk-head { font-size:13px; margin-bottom:9px; }
+    .bk-head b { color:var(--amber); }
+    .bk-cells { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:9px; }
+    .bk-cell { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:9px 11px;
+               display:flex; flex-direction:column; gap:1px; }
+    .bk-cell.bk-warn { border-color:#7a5f2f; }
+    .bk-n { font-size:19px; font-weight:700; }
+    .bk-cell.bk-warn .bk-n { color:var(--amber); }
+    .bk-l { font-size:12px; }
+    .bk-s { font-size:10.5px; color:var(--muted); }
+    .bk-go { align-self:flex-start; margin-top:6px; background:none; border:1px solid var(--border);
+             color:var(--blue); font-size:11px; padding:2px 8px; border-radius:6px; cursor:pointer; }
+    .bk-go:hover { border-color:var(--blue); }
     /* 批④ 待办事项 = 分诊台：按紧急度排的一列，0 的不显示，每条一句人话 + 一个跳转 */
     .tri-list { display:flex; flex-direction:column; gap:10px; }
     .tri-row { display:flex; align-items:center; gap:12px; background:var(--panel); border:1px solid var(--border);
@@ -434,6 +450,9 @@
       <div id="v-page" style="display:none"></div>
       <div id="v-found" style="display:none">
         <div class="pg-head"><button class="btn-ghost" onclick="showMainView('list')">← 返回列表</button><div class="pg-titlewrap"><span class="pg-title">🔍 找客户</span><span class="pg-sub">免费目录源优先 · 关键词搜索兜底 · 统一 AI 打分</span></div></div>
+
+        <!-- 批④：积压刹车条 —— 进货前先看管道里堵了多少（与"本轮将抓多少"并排，别只顾鼓励抓更多） -->
+        <div id="fc-backlog" class="fc-backlog" style="display:none"></div>
 
         <!-- 1) 客户画像·打分标准（全局，不折叠，第一块） -->
         <div class="fc-card">
@@ -1554,6 +1573,26 @@
     window.fcKwAll = (on) => { if(on) _fcKwRows.forEach(k=>_fcKwChecked.add(k.keyword)); else _fcKwChecked.clear(); renderKwInline(); };
     // 批A#3 客户画像展开/收起
     window.toggleProfile = () => { const t=$("#fc-profile"), btn=$("#fc-profile-toggle"); if(!t) return; const collapsed=t.classList.toggle('fc-collapsed'); if(btn) btn.textContent = collapsed ? '展开 / 编辑' : '收起'; if(!collapsed) t.focus(); };
+    // 批④ 积压刹车条：找客户只回答"要不要再进货、进多少"——进之前先看管道里堵着多少。
+    // 瓶颈常常不是线索不够（这页容易只顾鼓励你抓更多），而是没打分/缺邮箱/能发没发堵在中间。
+    function renderBacklog(b){
+      const el = $("#fc-backlog"); if(!el) return;
+      if(!b){ el.style.display='none'; return; }
+      const total = (b.unscored||0)+(b.noEmail||0)+(b.sendable||0);
+      if(!total){ el.style.display='none'; return; }   // 管道通畅就别唠叨
+      const jam = (b.unscored||0)+(b.noEmail||0);
+      const cell = (n,label,sub,fn,warn) => `<div class="bk-cell${warn?' bk-warn':''}">
+        <span class="bk-n">${n}</span><span class="bk-l">${esc(label)}</span><span class="bk-s">${esc(sub)}</span>
+        ${n?`<button class="bk-go" onclick="${fn}">去处理 →</button>`:''}</div>`;
+      el.style.display='block';
+      el.innerHTML = `<div class="bk-head">🚦 先看管道：<b>${jam}</b> 家还堵在中间${b.sendable?`，另有 <b>${b.sendable}</b> 家已经能发却还没发`:''}
+          ${jam>200?'　<span class="fc-warn">⚠️ 积压不小，建议先消化再进货</span>':''}</div>
+        <div class="bk-cells">
+          ${cell(b.unscored||0,'没打分','进来了还没过 AI',"gotoGroup('unscored')",(b.unscored||0)>150)}
+          ${cell(b.noEmail||0,'缺邮箱','打了分但没邮箱，发不出去',"gotoGroup('review')",(b.noEmail||0)>150)}
+          ${cell(b.sendable||0,'能发没发','已批准·有邮箱·≥60分',"gotoGroup('ready')",false)}
+        </div>`;
+    }
     // 批B 免费目录源：NMEA（逐 affcode + 10s Crawl-delay）+ rvwithtito
     async function runNmeaHarvest(){
       if (window._freeRunning) return; window._freeRunning = true;
@@ -1610,6 +1649,7 @@
       _fcCountryChecked.forEach(c=>{ if(!_fcCountryList.includes(c)) _fcCountryList.push(c); });  // 勾选项必在清单
       _fcKwActive = Array.isArray(cfg.activeKeywords) ? cfg.activeKeywords : null;
       { const au=$("#dp-auto"); if(au) au.checked = !!cfg.discoveryEnabled; }   // #S1 后台自动搜索开关回显
+      renderBacklog(cfg.backlog);   // 批④ 积压刹车条
       { const n=$("#fc-nmea"); if(n) n.onclick=runNmeaHarvest; const rv=$("#fc-rvtito"); if(rv) rv.onclick=runRvHarvest; }   // 批B 免费目录源按钮
       if (cfg.serper) { const u=$("#fc-serper-used"); if(u) u.textContent = cfg.serper.usedToday; const b=$("#fc-serper-budget"); if(b) b.value = cfg.serper.budget; }   // P0-c Serper 用量/预算回显
       { const sb=$("#fc-serper-save"); if(sb) sb.onclick = async () => { const v=Number($("#fc-serper-budget").value)||200; await fetch("/api/settings/search",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({serperBudget:v})}); $("#dp-msg").textContent="Serper 预算已保存"; }; }

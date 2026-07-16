@@ -101,6 +101,25 @@ const ALLOWED_STATUS = new Set([
   // A3：no_reply 已移除——孤儿状态，全局无任何写入方（仅 2 处纯展示查表且都有兜底）
 ]);
 
+// 批④ 找客户「积压刹车条」：进货前先看管道里堵了多少。
+// 瓶颈往往不是线索不够，是 199 家没打分 / 296 家缺邮箱堵在中间 —— 这时再抓 1300 家只会堵得更死。
+async function getBacklog(env: Env): Promise<{ unscored: number; noEmail: number; sendable: number }> {
+  const db = env.DB;
+  const q = async (sql: string) => (await db.prepare(sql).first<{ n: number }>())?.n || 0;
+  return {
+    // 没打分：进来了还没过 AI（cron 会慢慢消化，但堆太多就是堵）
+    unscored: await q("SELECT COUNT(*) AS n FROM leads WHERE status='new'"),
+    // 缺邮箱：打了分但没邮箱 → 发不出去，卡在待审批
+    noEmail: await q("SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id WHERE (l.email IS NULL OR l.email='') AND l.status IN ('analyzed','pending','approved','queued')"),
+    // 能发没发：真能发出去却还躺着（与待办事项 sendable 同一口径）
+    sendable: await q(
+      `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
+        WHERE l.status='approved' AND a.match_score >= ${APPROVE_MIN_SCORE}
+          AND l.email IS NOT NULL AND l.email!=''
+          AND lower(l.email) NOT IN (SELECT email FROM suppressed_emails)`),
+  };
+}
+
 // A1 待发送准入门槛（单一真源，bulk-status 与单条 status 共用）：
 // 置 approved 必须 有邮箱 且 已打分 且 ≥60（与发送端 sendApprovedBatch 的 ≥60 门槛一致）。
 // 返回 null=可批准；否则返回拒绝原因。
@@ -1040,6 +1059,7 @@ app.get("/api/settings/search", async (c) => {
     activeKeywords,                    // #45 已勾选关键词（null=全部）
     discoveryEnabled: (await getSetting(c.env, "discovery_enabled", "0")) === "1",   // #S1 后台每6h自动搜索开关（默认关）
     serper: await getSerperUsage(c.env),   // P0-c 今日 Serper 用量 + 预算
+    backlog: await getBacklog(c.env),      // 批④：积压刹车条 —— 瓶颈不是线索不够，是管道里堵着
   });
 });
 app.post("/api/settings/search", async (c) => {
