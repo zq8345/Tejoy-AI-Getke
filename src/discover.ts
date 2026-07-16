@@ -322,7 +322,10 @@ export async function runNmeaDiscovery(env: Env, affcode: string): Promise<Direc
     if (dup) { out.skipped++; continue; }
     const company = rawName || companyFromDomain(domain) || "(unknown)";
     const country = inferCountryFromWebsite(website) || null;   // ccTLD 能推则填，否则留空由 AI 分析回填
-    await env.DB.prepare("INSERT INTO leads (company_name, website, country, source, status) VALUES (?, ?, ?, 'nmea', 'new')").bind(company, website, country).run();
+    // ⭐ 存 affcode（Dealer / International）到 keyword：以前只写 source='nmea'，把这条丢了 →
+    //    入库后再也分不清哪条来自哪个分支，来源背书也就没法分级、没法追溯。
+    //    （存量那 196 条的 keyword 全是 NULL，无法回溯，统一按泛称 "NMEA 目录" 处理。）
+    await env.DB.prepare("INSERT INTO leads (company_name, website, country, source, keyword, status) VALUES (?, ?, ?, 'nmea', ?, 'new')").bind(company, website, country, aff).run();
     out.inserted++;
   }
   return out;

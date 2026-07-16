@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { basicAuth } from "hono/basic-auth";
 import { parseCsv, mapRowToLead } from "./csv";
 import { analyzeLead, getProfile, DEFAULT_PROFILE } from "./service";
-import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese } from "./openrouter";
+import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese, isTrustedDirectorySource } from "./openrouter";
 import { scrapeSite } from "./scrape";
 import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed } from "./send";
 import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
@@ -732,7 +732,11 @@ app.get("/api/today", async (c) => {
 app.post("/api/leads/import", async (c) => {
   const body = await c.req.json<{ csv?: string; source?: string }>().catch(() => ({}));
   const csv = body.csv || "";
-  const source = body.source || "csv";
+  // ⚠️ source 由请求体控制 → 绝不允许自称可信目录来源（nmea/rvwithtito）。
+  //    否则导一份 CSV 写 source=nmea，每条都能白拿 NMEA 强背书 = 打分器的新骗分通道。
+  //    可信目录背书只能由我们自己的抓取管道（runNmeaDiscovery / runLinkHarvest）写入。
+  const rawSource = String(body.source || "").trim();
+  const source = (!rawSource || isTrustedDirectorySource(rawSource)) ? "csv" : rawSource.slice(0, 40);
   if (!csv.trim()) return c.json({ error: "empty csv" }, 400);
 
   const rows = parseCsv(csv);

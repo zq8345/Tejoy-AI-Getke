@@ -157,14 +157,33 @@ function normalize(u: string): string {
 }
 
 const REL_KEYWORDS = ["about", "contact", "product", "service", "solution", "shop", "starlink"];
+// ⭐ 证据页：能证明"它在卖/装实体硬件"的页面。打分闸的唯一判据就是这个，
+//    所以这些页必须优先抓 —— 只采 ≤3 个子页时，抓到产品页还是抓到"关于我们"，
+//    直接决定这条线索是 85 还是 30。以前按 found 的插入顺序挑 = 闭着眼睛抓。
+//
+// 分强弱两档（实测教训）：`service` 这种弱词会命中 /service-areas、/terms-of-service，
+// 它们不证明在卖硬件，却会靠文档顺序**挤掉 /products/**。所以强证据必须排在弱证据前面。
+const EVIDENCE_STRONG = /(starlink|product|dealer|shop|store|catalog|equipment|brand|reseller|distributor)/i;
+const EVIDENCE_WEAK = /(install|service|solution)/i;
+// 法务/招聘页永远不是证据，先排掉——否则 terms-of-service 会命中上面的 service
+const EVIDENCE_JUNK = /(terms|privacy|policy|legal|cookie|career|job|login|cart|checkout|account)/i;
+const MAX_SCAN = 60;   // 最多扫这么多个 <a>，够翻出证据页又不至于在大站上空转
 
 function pickInternalLinks(html: string, base: string): string[] {
   const origin = new URL(base).origin;
-  const found = new Set<string>();
-  const re = /<a\b[^>]*href\s*=\s*["']([^"'#]+)["'][^>]*>/gi;
+  const seen = new Set<string>();
+  const strong: string[] = []; // 直接指向"卖什么"的页 → 最优先
+  const weak: string[] = [];   // 可能相关（安装/服务）→ 次之
+  const rest: string[] = [];   // 其它相关页（about/contact 等）→ 补剩余名额
+  // 连锚文本一起取：URL 常是 /p/12345 这种看不出内容的，但锚文本写着 "Shop Starlink"。
+  // 只看 URL 会把这类证据页整个漏掉。
+  const re = /<a\b[^>]*href\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(html)) && found.size < 12) {
-    let href = m[1].trim();
+  let scanned = 0;
+  while ((m = re.exec(html)) && scanned < MAX_SCAN) {
+    scanned++;
+    const href = m[1].trim();
+    const anchor = htmlToText(m[2] || "").slice(0, 120);
     if (!href || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:")) continue;
     let abs: string;
     try {
@@ -173,10 +192,19 @@ function pickInternalLinks(html: string, base: string): string[] {
       continue;
     }
     if (!abs.startsWith(origin)) continue; // 只抓同站
+    if (seen.has(abs)) continue;
     const lower = abs.toLowerCase();
-    if (REL_KEYWORDS.some((k) => lower.includes(k))) found.add(abs);
+    const hay = lower + " " + anchor.toLowerCase();
+    if (EVIDENCE_JUNK.test(hay)) continue;                    // 法务/招聘/购物车：永远不是证据
+    const isStrong = EVIDENCE_STRONG.test(hay);
+    const isWeak = !isStrong && EVIDENCE_WEAK.test(hay);
+    const isRelated = REL_KEYWORDS.some((k) => lower.includes(k));
+    if (!isStrong && !isWeak && !isRelated) continue;
+    seen.add(abs);
+    (isStrong ? strong : isWeak ? weak : rest).push(abs);
+    if (strong.length + weak.length + rest.length >= 12) break;
   }
-  return [...found];
+  return [...strong, ...weak, ...rest];   // 强证据排最前；调用方 slice(0,3) 就会先要它们
 }
 
 export function htmlToText(html: string): string {

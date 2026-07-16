@@ -115,7 +115,11 @@ export async function analyzeLead(env: Env, lead: any): Promise<AnalyzeOutcome> 
         .bind(JSON.stringify(scraped.channels), lead.id).run();
     }
 
-    const score = await scoreLead(env, profile, lead.company_name || "", siteText);
+    // ⭐ 把线索来源喂给打分器：NMEA 目录成员本身就是"我是船舶电子经销/安装商"的硬证据，
+    //    比爬虫瞎猜官网可靠。白名单与安全约束见 openrouter.ts 的 sourceEndorsement ——
+    //    source='search' 绝不享受背书（攻略文章正是从搜索来的）。
+    //    keyword 存的是 NMEA affcode（Dealer/International）；存量老数据为 NULL → 退回泛称。
+    const score = await scoreLead(env, profile, lead.company_name || "", siteText, lead.source, lead.keyword);
     const email = await writeEmail(env, profile, lead.company_name || "", siteText, score);
     const category = categorizeCustomerType(score.customer_type);
 
