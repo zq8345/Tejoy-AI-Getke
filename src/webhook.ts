@@ -59,6 +59,26 @@ export async function verifyResendSignature(env: Env, req: Request, rawBody: str
   }
 }
 
+/** 点击分类：退订链接 / 真实链接 / 判不出来（见 email.clicked 分支的长注释） */
+type ClickKind = "unsub" | "real" | "unknown";
+
+/**
+ * 判断这次 clicked 点的是不是退订链接。
+ * **精确判定优先**：按 provider_id 取这封信自己的 unsubscribe_token，link 含该 token 才算退订 ——
+ * 不靠 URL 正则猜（正则会把客户官网上任何含 /u/ 的路径误判成退订）。
+ * 兜底：token 取不到（老数据/provider_id 对不上）时，才认 /u/<token> 的路径形态。
+ */
+async function classifyClick(env: Env, emailId: string | null, link: string): Promise<ClickKind> {
+  if (!link) return "unknown";
+  if (emailId) {
+    const row = await env.DB.prepare("SELECT unsubscribe_token FROM emails WHERE provider_id=? LIMIT 1")
+      .bind(emailId).first<{ unsubscribe_token: string | null }>();
+    const tok = (row?.unsubscribe_token || "").trim();
+    if (tok) return link.includes(tok) ? "unsub" : "real";   // 拿到 token → 判定是确定的，不再猜
+  }
+  return /\/u\/[A-Za-z0-9_\-]{6,}/.test(link) ? "unsub" : "real";
+}
+
 export async function handleResendEvent(env: Env, event: any): Promise<{ ok: boolean; action: string; lead?: number | null }> {
   const type = String(event?.type || "");
   const data = event?.data || {};
@@ -113,7 +133,35 @@ export async function handleResendEvent(env: Env, event: any): Promise<{ ok: boo
   }
 
   // 冲刺1a：点击追踪。clicked 是强意向信号 → 记录 + 推飞书"趁热跟进"（只 clicked 推，opened 不推）。
+  // ⭐「点退订」也是 clicked：每封信底部都有 "unsubscribe here"（send.ts buildHtml/buildText），
+  //    Resend 对它同样上报 email.clicked。以前这里不看用户点的是**哪个链接** → 人点退订，
+  //    系统转头给 Joe 推"🔥 强意向信号，趁热跟进转化率最高"。
+  //    生产实证：14 个"点击"里 12 个是退订，全部落在群发后 20 秒内。
+  //    污染的**不止推送** —— clicked_at / last_engaged_at 会一路串下去：
+  //      · clicked_at → has_click → 🔥徽章 +「已查看」格 + 看板"已查看→已回复 转化 0%"
+  //      · last_engaged_at → sendFollowupBatch 的 engaged 分支用更快的节奏去追刚退订的人
+  //    所以退订点击必须在**写库之前**拦掉，而不是只按住飞书。
   if (type === "email.clicked") {
+    const kind = await classifyClick(env, emailId, String(data?.click?.link ?? data?.link ?? ""));
+    if (kind === "unsub") {
+      // 这不是意向，是"别再发了"。什么都不写、不推。
+      //（真正的退订处理走 /u/<token> 页面那条独立路径，不依赖这里，所以拦掉不会漏掉退订本身。）
+      return { ok: true, action: "clicked_unsubscribe_ignored", lead: leadId };
+    }
+    if (kind === "unknown") {
+      // link 缺失 → 判不出来。只累加 click_count（**write-only 取证计数：全库无任何读取方**），
+      // 不写 clicked_at / last_engaged_at、不推飞书。
+      //
+      // 总工倾向"记 clicked_at 但不推飞书"，我按他自己给的原则往前推了一格。理由：
+      // 他的原则是"宁可漏报一个真点击，也不要再给 Joe 推一条假的"—— 而 clicked_at **本身就在给假的**：
+      // 它驱动 🔥徽章 +「已查看」格 + 看板转化率。只按住飞书却让 clicked_at 照写，
+      // 四个污染口只堵了一个，Joe 照样会在列表里看到假 🔥、在看板上看到假的 0% 转化。
+      // 且生产实证 14 个点击里 12 个是退订 → 判不出来时写进去，更可能是造假而不是捡到信号。
+      if (emailId) await env.DB.prepare(
+        "UPDATE emails SET click_count = click_count + 1 WHERE provider_id = ?"
+      ).bind(emailId).run();
+      return { ok: true, action: "clicked_unknown_link", lead: leadId };
+    }
     if (emailId) await env.DB.prepare(
       "UPDATE emails SET click_count = click_count + 1, clicked_at = COALESCE(clicked_at, datetime('now')) WHERE provider_id = ?"
     ).bind(emailId).run();
