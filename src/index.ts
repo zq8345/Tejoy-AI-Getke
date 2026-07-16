@@ -1354,17 +1354,28 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   //    成功→status 转 analyzed→下批取到新的；本批全失败(多为持久问题:模型/网络)→停，别空转浪费子请求。
   const CRON_ANALYZE_MAX = 12; // 单轮最多分析条数（~8-12 安全区，别在一次 Cron 抽干 100+）
   let attempts = 0;
+  let fetchSkipped = 0;
+  // ⭐ 本轮已试过的 id 必须排除掉。抓站失败的线索**故意留在 status='new'**（等下一轮 cron 重试），
+  //    而本 while 每批都按 `status='new' ORDER BY id ASC` 重取 —— 不排除的话同一批抓不到的线索
+  //    会在**同一轮里**被反复取到，几个来回就把 fetch_fail_count 的 3 次上限烧穿，
+  //    "留着下轮重试"直接变成"一轮内判死"，比不修还糟。
+  const tried = new Set<number>();
   while (attempts < CRON_ANALYZE_MAX) {
     let batch: any[] = [];
     try {
       const take = Math.min(8, CRON_ANALYZE_MAX - attempts);
-      const rows = await env.DB.prepare("SELECT * FROM leads WHERE status='new' ORDER BY id ASC LIMIT ?").bind(take).all();
+      const skip = [...tried];
+      const rows = await env.DB.prepare(
+        skip.length
+          ? `SELECT * FROM leads WHERE status='new' AND id NOT IN (${skip.map(() => "?").join(",")}) ORDER BY id ASC LIMIT ?`
+          : "SELECT * FROM leads WHERE status='new' ORDER BY id ASC LIMIT ?"
+      ).bind(...skip, take).all();
       batch = rows.results as any[];
     } catch (e) { console.error("analyze-fetch:", e); break; }
     if (!batch.length) break;
-    let okThisBatch = 0;
+    let okThisBatch = 0, hardFail = 0;
     for (const lead of batch) {
-      attempts++;
+      attempts++; tried.add(Number(lead.id));
       try {
         const out = await analyzeLead(env, lead);
         if (out.ok) {
@@ -1373,11 +1384,20 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
             const a = await env.DB.prepare("SELECT customer_category FROM lead_analysis WHERE lead_id=?").bind(lead.id).first<{ customer_category: string }>();
             highScore.push({ company: lead.company_name || lead.website || `#${lead.id}`, score: out.score!, category: a?.customer_category });
           }
+        } else if (out.fetchFailed) {
+          // 抓不到是**这个站**的问题（限流/挂了/拦 UA），不是模型挂了 → 跳过继续，别拖累整轮
+          fetchSkipped++;
+          console.log(`analyze skip(fetch): #${lead.id} ${lead.website || ""} ${out.error || ""}`);
+        } else {
+          hardFail++; // 模型/DB 失败 → 多半是持久问题（OpenRouter 挂、额度尽）
         }
-      } catch (e) { console.error("analyze:", lead.id, e); }
+      } catch (e) { hardFail++; console.error("analyze:", lead.id, e); }
     }
-    if (okThisBatch === 0) break; // 本批 0 成功（status 未推进）→ 停，避免对同批失败线索空转
+    // 只有「真失败」（模型/DB）且本批零成功才停 —— 那多半是 OpenRouter 挂了，继续只是空转烧子请求。
+    // 全是抓站失败 → **继续下一批**：它们已进 tried 不会被重取，后面的正常线索不该被这几条卡死。
+    if (okThisBatch === 0 && hardFail > 0) break;
   }
+  if (fetchSkipped) console.log(`analyze: ${fetchSkipped} 条因官网抓不到跳过（未打分，等下轮重试）`);
   // 3) 拉取并处理客户回复（P4；热回复会在 ingestReplies 内实时推飞书）
   try { if (env.LARK_IMAP_PASS) { const r = await ingestReplies(env); replies = r.ingested || 0; } } catch (e) { console.error("replies:", e); }
   // 3.5) 无回复自动跟进（仅当开关开启；每轮最多 5 封，遵守每日上限）

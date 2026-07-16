@@ -1,0 +1,13 @@
+-- 修「抓站失败＝不合格」：给 leads 加抓站失败计数。
+--
+-- 背景：analyzeLead 以前不看 scrapeSite 返回的 ok，官网抓不到时把空文本喂给 scoreLead，
+-- H3 必判"官网看不出在卖/装硬件" → ≤30 → 永久钉死，且与"真不合格"在分数上无法区分。
+-- 生产已埋掉 15 家核心目标客户（cayelectronics.vg / 12volt.com.au / flarespace.com /
+-- ccrvtechandsolar.com / off-gridrv.com …）。
+--
+-- 现在：抓不到 → 不调 LLM、不写分、留 new 等下轮重试；连续失败达 3 次 → 转 analyzed 但
+-- match_score 保持 NULL（approveGateReason 的"未打分不能批准"兜住），人工可见可处理。
+--
+-- ⚠️ ALTER TABLE ADD COLUMN 在 SQLite 不支持 IF NOT EXISTS，**重复执行会报 duplicate column name**。
+--    只跑一次；若报这个错说明已经加过了，可安全忽略。
+ALTER TABLE leads ADD COLUMN fetch_fail_count INTEGER NOT NULL DEFAULT 0;

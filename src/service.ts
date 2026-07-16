@@ -1,6 +1,6 @@
 // 分析流水线：抓官网 → 打分 → 写信 → 写库
 import type { Env } from "./index";
-import { scrapeSite } from "./scrape";
+import { scrapeSite, type ScrapeResult } from "./scrape";
 import { scoreLead, writeEmail } from "./openrouter";
 import { categorizeCustomerType } from "./taxonomy";
 import { inferCountryFromWebsite, COUNTRIES } from "./discover";
@@ -27,6 +27,68 @@ export interface AnalyzeOutcome {
   id: number;
   score?: number;
   error?: string;
+  /** 官网抓不到（**不是**模型失败）。调用方应「跳过这条、继续下一条」，绝不能拿它当"分析失败"去 break 整轮。 */
+  fetchFailed?: boolean;
+  /** 抓失败已达上限，已归档成 analyzed（match_score 仍为 NULL） */
+  giveUp?: boolean;
+  fetchFailCount?: number;
+}
+
+// ⭐「抓站失败 ≠ 不合格」
+// 以前 analyzeLead 不看 scrapeSite 返回的 ok，官网抓不到时照样把空文本喂给 scoreLead，
+// H3 必判"官网看不出在卖/装硬件" → ≤30 → **永久钉死，且与"真不合格"在分数上无法区分**。
+// 生产已因此埋掉 15 家核心目标客户（cayelectronics.vg 船舶电子 / 12volt.com.au 房车电源 /
+// flarespace.com 房车改装 / ccrvtechandsolar.com / off-gridrv.com …）。
+// 现在的规则：抓不到 → **不调 LLM**（给空页面打分毫无意义，白烧额度）、**不写 match_score**、
+// **不推进 status**（留 new 等下轮重试）；连续失败达 FETCH_FAIL_MAX → 归档成 analyzed 但
+// match_score 保持 **NULL**，靠 approveGateReason 的"未打分不能批准"兜住 →
+// 它落在「待审批」显示未打分，**可见、可人工处理**，而不是埋在低分堆里冒充"不合格"。
+export const FETCH_FAIL_MAX = 3;
+export const FETCH_FAIL_TYPE = "官网抓不到·无法判断";
+// 抓到了但正文少到没法判（JS-only 空壳、"请开启 JavaScript"页等）等价于没抓到——
+// 送给 LLM 同样只会得到"看不出在卖什么"→≤30 永久钉死。门槛压得很低，只拦真空壳。
+const MIN_USABLE_TEXT = 200;
+
+function usableSiteText(scraped: ScrapeResult): boolean {
+  if (!scraped.ok) return false;
+  const body = scraped.text.replace(/^#\s+\S+$/gm, "").trim(); // 去掉 "# {url}" 那几行页头再量
+  return body.length >= MIN_USABLE_TEXT;
+}
+
+// 抓不到官网：记一次失败；没到上限就留在 new 等下轮重试，到上限则归档但**不判死**。
+async function recordFetchFailure(env: Env, lead: any, scraped: ScrapeResult): Promise<AnalyzeOutcome> {
+  const why = scraped.error || (scraped.ok ? "官网正文过少（疑似 JS 空壳/占位页）" : "官网抓取失败");
+  await env.DB.prepare(
+    "UPDATE leads SET fetch_fail_count = COALESCE(fetch_fail_count,0)+1, updated_at=datetime('now') WHERE id=?"
+  ).bind(lead.id).run();
+  const row = await env.DB.prepare("SELECT COALESCE(fetch_fail_count,0) AS n FROM leads WHERE id=?")
+    .bind(lead.id).first<{ n: number }>();
+  const n = row?.n ?? 1;
+
+  if (n < FETCH_FAIL_MAX) {
+    return {
+      ok: false, id: lead.id, fetchFailed: true, fetchFailCount: n,
+      error: `${why}（第 ${n}/${FETCH_FAIL_MAX} 次，未打分、留 new 等下轮重试）`,
+    };
+  }
+
+  // 到上限：转 analyzed 让它别再占分析队列，但 match_score 保持 NULL —— 未打分 ≠ 不合格。
+  const note = `连续 ${n} 次抓不到官网（${why}）。**未打分**：这不是"不合格"，是根本没看到官网内容。` +
+    `需要人工看一眼或补个能打开的网址，再手动重新分析。`;
+  await env.DB.prepare(
+    `INSERT INTO lead_analysis (lead_id, customer_type, customer_category, match_score, needed_products, reason, recommended_email, model, analyzed_at)
+     VALUES (?, ?, ?, NULL, NULL, ?, NULL, ?, datetime('now'))
+     ON CONFLICT(lead_id) DO UPDATE SET
+       customer_type=excluded.customer_type, customer_category=excluded.customer_category,
+       match_score=NULL, reason=excluded.reason, model=excluded.model, analyzed_at=excluded.analyzed_at
+     WHERE lead_analysis.match_score IS NULL`
+    // ⚠️ 末尾这个 WHERE 是防误伤：这条线索若**以前抓得到、已有真分数**（例如 Seacoast 抓得到时拿过 75），
+    //    那个分数是基于真实官网内容得出的，绝不能被后来的网络抖动抹成 NULL。有真分数就保留，不覆盖。
+  ).bind(lead.id, FETCH_FAIL_TYPE, categorizeCustomerType(FETCH_FAIL_TYPE), note, "fetch-failed(未调用 LLM)").run();
+  await env.DB.prepare(
+    "UPDATE leads SET status='analyzed', updated_at=datetime('now') WHERE id=? AND status='new'"
+  ).bind(lead.id).run();
+  return { ok: false, id: lead.id, fetchFailed: true, giveUp: true, fetchFailCount: n, error: note };
 }
 
 // 分析单条线索：写入 lead_analysis，并把 leads.status 推进到 analyzed
@@ -34,6 +96,10 @@ export async function analyzeLead(env: Env, lead: any): Promise<AnalyzeOutcome> 
   const profile = await getProfile(env);
   try {
     const scraped = await scrapeSite(lead.website || "");
+
+    // ⭐ 抓不到官网就到此为止：不调 LLM、不写分、不推进 status（见上方 FETCH_FAIL_MAX 注释）
+    if (!usableSiteText(scraped)) return await recordFetchFailure(env, lead, scraped);
+
     const siteText = scraped.text;
 
     // 若线索无邮箱，用抓取到的最佳邮箱补上
@@ -70,6 +136,12 @@ export async function analyzeLead(env: Env, lead: any): Promise<AnalyzeOutcome> 
     // 已分析且未被人工处理过的，推进到 analyzed（仍属「待审核」分组）
     await env.DB.prepare(
       "UPDATE leads SET status='analyzed', updated_at=datetime('now') WHERE id=? AND status='new'"
+    ).bind(lead.id).run();
+
+    // 抓成功 → 失败计数清零：历史上的偶发抖动不该累加，否则迟早把一个健康站点误推到上限。
+    // 加 >0 守卫，避免给每条正常线索都写一次无意义的 UPDATE。
+    await env.DB.prepare(
+      "UPDATE leads SET fetch_fail_count=0 WHERE id=? AND COALESCE(fetch_fail_count,0)>0"
     ).bind(lead.id).run();
 
     // 回填国家：仅当 country 为空时补，绝不覆盖已有（SQL 守卫保证幂等）。
