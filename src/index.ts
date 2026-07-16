@@ -7,7 +7,7 @@ import { scrapeSite } from "./scrape";
 import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed, autoSentToday, getBreakerStatus, BREAKER_WINDOW, BREAKER_THRESHOLD } from "./send";
 import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
 import { findLeadEmail } from "./findemail";
-import { ingestReplies } from "./replies";
+import { ingestReplies, matchReplyToLead } from "./replies";
 import { categorizeCustomerType, classifyKillReason, KILL_REASONS } from "./taxonomy";
 import { larkConfigured, larkSend, digestCard, testCard, inboundCard } from "./notify";
 import { catalogHtml } from "./landing";
@@ -1419,6 +1419,18 @@ app.post("/api/webhooks/resend", async (c) => {
   return c.json(r);
 });
 
+// ---- 批⑧：回复匹配自测（不碰 IMAP）----
+// 匹配逻辑是这条链上最容易悄悄坏掉的一环（坏了的表现就是"什么都没发生"，跟"没人回信"长得一样）。
+// 给它一个不依赖真邮箱、可反复跑的入口：传 from/inReplyTo，看它匹到谁、走的哪一层。
+app.post("/api/replies/match-test", async (c) => {
+  const b = await c.req.json<{ from?: string; inReplyTo?: string; references?: string[] }>().catch(() => ({}));
+  const m = await matchReplyToLead(
+    c.env, String(b.from || "").toLowerCase().trim(),
+    String(b.inReplyTo || ""), Array.isArray(b.references) ? b.references : [],
+  );
+  return c.json(m);
+});
+
 // ---- P4 回复处理：手动拉取新回复 ----
 app.post("/api/replies/fetch", async (c) => {
   const out = await ingestReplies(c.env);
@@ -1456,6 +1468,41 @@ app.get("/api/replies", async (c) => {
      ORDER BY r.id DESC LIMIT 200`
   ).all();
   return c.json({ replies: rows.results });
+});
+
+// ---- 批⑧ Bug2 第三条：孤儿回复（匹配不上任何线索）----
+// 为什么必须单开一个接口：「已回复」页的数据源是 `/api/leads?group=replied`，**每行一个线索**。
+// 孤儿回复根本没有线索 → 它在那个页面上**永远不可能出现**。这就是"入库就沉底"的机制。
+app.get("/api/replies/orphans", async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT id, from_email, subject, summary, category, content, received_at
+       FROM replies WHERE lead_id IS NULL ORDER BY id DESC LIMIT 50`
+  ).all();
+  return c.json({ orphans: rows.results });
+});
+
+// 人工把一条孤儿回复挂到某条线索上 —— 三层匹配也有兜不住的时候（换域名回、私人邮箱回），
+// 那时得有人能一键接上，而不是只能干看着。
+app.post("/api/replies/:id/link", async (c) => {
+  const id = Number(c.req.param("id"));
+  const b = await c.req.json<{ lead_id?: number }>().catch(() => ({} as any));
+  const leadId = Number(b.lead_id);
+  if (!id || !leadId) return c.json({ error: "缺少 reply id 或 lead_id" }, 400);
+  const lead = await c.env.DB.prepare("SELECT id, company_name, status FROM leads WHERE id = ?")
+    .bind(leadId).first<{ id: number; company_name: string; status: string }>();
+  if (!lead) return c.json({ error: `线索 #${leadId} 不存在` }, 404);
+  const reply = await c.env.DB.prepare("SELECT id, lead_id, from_email, category FROM replies WHERE id = ?")
+    .bind(id).first<{ id: number; lead_id: number | null; from_email: string; category: string }>();
+  if (!reply) return c.json({ error: "回复不存在" }, 404);
+  if (reply.lead_id) return c.json({ error: `这条回复已经挂在线索 #${reply.lead_id} 上了` }, 400);
+
+  await c.env.DB.prepare("UPDATE replies SET lead_id = ? WHERE id = ?").bind(leadId, id).run();
+  // 推进状态用**和自动匹配完全一样的那两行**（replies.ts:199-200 照抄，含投诉→黑名单这条分支）——
+  // 人工救回来的和自动匹配上的必须长得一样，否则会出现"两套语义"。
+  const newStatus = reply.category === "complaint" ? "blacklisted" : "replied";
+  await c.env.DB.prepare("UPDATE leads SET status=?, updated_at=datetime('now') WHERE id=?")
+    .bind(newStatus, leadId).run();
+  return c.json({ ok: true, lead_id: leadId, company_name: lead.company_name, status: newStatus });
 });
 
 // ---- Landing 落地页（公开）----
@@ -1717,12 +1764,60 @@ async function rescanStats(env: Env): Promise<{ hi: number; lo: number; nil: num
   return { hi: s?.hi ?? 0, lo: s?.lo ?? 0, nil: s?.nil ?? 0 };
 }
 
+/**
+ * 批⑧：收回复失败必须**响**，不能像以前那样悄无声息地断着。
+ * 一天最多吵一次（IMAP 挂了通常是持续性的，每 6h 推一条会变成噪音，噪音久了 Joe 就不看了）。
+ */
+async function alertReplyFailure(env: Env, why: string): Promise<void> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    if ((await getSetting(env, "reply_fail_alert_date", "")) === today) return;   // 今天已经吵过
+    await setSetting(env, "reply_fail_alert_date", today);
+    await setSetting(env, "reply_fail_last", `${new Date().toISOString().slice(0, 19).replace("T", " ")} ${why}`.slice(0, 300));
+    if (!larkConfigured(env)) return;
+    await larkSend(env, { msg_type: "text", content: { text:
+      `TEJOY ⚠️ 收客户回复失败\n${why}\n\n` +
+      `**这意味着现在客户回信我们可能收不到。**\n` +
+      `已经收到的回复不受影响；但新回复要么延迟、要么丢。请尽快看一眼 hello@tejoy.net 的 IMAP。\n` +
+      `（同样的错一天只提醒一次，免得刷屏）` } });
+  } catch (e) { console.error("alertReplyFailure:", e); }   // 告警失败不能反过来拖垮 cron
+}
+
 // Cron 定时任务：自动找客户 + 自动分析新线索（7×24 运行）
 async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
   // ⚠️ 全量重扫**不在这里** —— 它走交互式批量通道（/api/rescan/*，后台按钮驱动）。
   //    cron 这 12 条/班是**日常新增线索**的节奏；拿它跑一次性批量任务要 9 天，
   //    而 Joe 的标准是"428 条当天跑完"。两件事，两条通道，互不干扰。
   let inserted = 0, analyzed = 0, replies = 0, autoApproved = 0, autoSent = 0;
+
+  // ⭐ step 0）收客户回复 —— **排在最前面，这个顺序本身是修复的一部分**。
+  //
+  // 它以前排在第 3 步（找客户 → 分析 12 条 → 自动批准 → 自动发送 → **才轮到收回复**）。
+  // 那个排序把这条链上**最值钱的一步**放在了最后：一个真客户回信，价值远大于分析 12 条新线索。
+  // 排最后意味着前面任何一步慢了/挂了，它就轮不到 —— 而且没人会知道。
+  // 今天的实证：Data Lake 的 Michael 昨天 19:06 就回信了（"Please send your catalog and pricing."），
+  // 系统一无所知，Joe 是自己在邮箱里肉眼看见的。
+  //
+  // ⚠️ 而且**失败必须响**：ingestReplies 里 IMAP 失败时是 `return { error }` 而**不是 throw** ——
+  //    以前调用方只读 `r.ingested`，`r.error` 根本没人看，连 console.error 都不会打。
+  //    catch 是摆设（没东西抛给它）。这就是"静默断了不知道多久"的机制。
+  try {
+    if (!env.LARK_IMAP_PASS) {
+      // 以前这里是 `if (env.LARK_IMAP_PASS) {...}` —— 没配就**整段跳过、一声不吭**。
+      console.error("replies: 缺少 LARK_IMAP_PASS，收回复整段跳过");
+      await alertReplyFailure(env, "缺少 LARK_IMAP_PASS（IMAP 密码没配），收回复功能整个没在跑");
+    } else {
+      const r = await ingestReplies(env);
+      replies = r.ingested || 0;
+      if (r.error) {                       // ← 关键：这个 error 以前没人读
+        console.error("replies:", r.error);
+        await alertReplyFailure(env, r.error);
+      }
+    }
+  } catch (e: any) {
+    console.error("replies:", e);
+    await alertReplyFailure(env, e?.message || String(e));
+  }
 
   // 1) 搜索找新客户（每关键词 5 条，控制用量）—— #S1 受 discovery_enabled 开关控制（默认关，防 cron 每 6h 全量烧 Serper 积分）
   try {
@@ -1844,8 +1939,7 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
     }
   } catch (e) { console.error("auto-send:", e); }
 
-  // 3) 拉取并处理客户回复（P4；热回复会在 ingestReplies 内实时推飞书）
-  try { if (env.LARK_IMAP_PASS) { const r = await ingestReplies(env); replies = r.ingested || 0; } } catch (e) { console.error("replies:", e); }
+  // 3) 收回复已挪到 **step 0**（cron 最前面）—— 见那里的注释。这里只留个路标防止有人再排回来。
   // 3.5) 无回复自动跟进（仅当开关开启；每轮最多 5 封，遵守每日上限）
   try { await sendFollowupBatch(env, 5); } catch (e) { console.error("followup:", e); }
 

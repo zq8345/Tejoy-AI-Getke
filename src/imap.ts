@@ -71,7 +71,20 @@ async function runCmd(rd: Reader, wr: WritableStreamDefaultWriter<Uint8Array>, t
 
 function q(s: string): string { return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`; }
 
-const IMAP_SESSION_TIMEOUT_MS = 25000; // M2：整个 IMAP 会话总超时，防止无限阻塞拖垮 Cron
+// ⭐ 批⑧ Bug1 根因：**这个数和 IMAP_BATCH(30) 在数学上不可能同时成立** —— 收回复因此静默断了。
+//
+// 2026-07-16 对真邮箱实测的分段耗时：
+//   连接+登录+SELECT+SEARCH = 3.9s（不慢）
+//   **每封 UID FETCH ≈ 4.4s** —— 逐封一个来回，慢的是往返次数不是传输量
+//   → 3 封就 17.7s；连跑三次：23.8s ✓ / **25.3s ✗超时** / 21.7s ✓ —— **贴着 25s 线掷硬币**
+//   → 而 IMAP_BATCH=30 意味着单次会话要 30×4.4+3.9 ≈ **136 秒**：
+//     **只要积压 6 封以上，这条链 100% 失败**，且失败完全静默（见 replies.ts 里 r.error 那段）。
+//
+// 两处一起改才有意义：
+//   1. 下面的 UID FETCH 改成**一个命令取完整批**（一次往返）—— 这是根治，不是调参
+//   2. 超时给足：收回复是整条链上最值钱的一步（一个真客户回信 > 分析 12 条新线索），
+//      不该为了"别拖垮 cron"把它掐死；何况它已挪到 cron 最前面（index.ts step 0）。
+const IMAP_SESSION_TIMEOUT_MS = 90000;
 
 export interface FetchResult {
   maxUid: number;          // 邮箱内全体最大 UID（首次基线用它）
@@ -116,11 +129,38 @@ export async function fetchNewMessages(env: Env, sinceUid: number, maxCount = IM
       return { maxUid, processedMaxUid: maxUid, attempted: 0, messages: [] };
     }
 
+    // ⭐ 批⑧ Bug1 根治：**一个命令取完整批**，不再逐封往返。
+    //   实测每封往返 ≈4.4s，而慢的是往返次数不是传输量 —— 30 封逐封要 132s（必然超时），
+    //   合成一条 `UID FETCH 3,4,5 (BODY.PEEK[])` 只花一个来回。
+    //   runCmd 本来就把一次响应里的多个 literal 都收进 literals[]，所以它天然支持多封。
     const messages: { uid: number; raw: Uint8Array }[] = [];
-    for (let i = 0; i < newUids.length; i++) {
-      const uid = newUids[i];
-      const f = await runCmd(rd, wr, "b" + i, `UID FETCH ${uid} (BODY.PEEK[])`);
-      if (f.literals.length) messages.push({ uid, raw: f.literals[0] });
+    if (newUids.length) {
+      const f = await runCmd(rd, wr, "b0", `UID FETCH ${newUids.join(",")} (BODY.PEEK[])`);
+      // 从响应行里**读出** UID，而不是假设"返回顺序 == 我们给的顺序"：
+      // 服务器没义务按序返回，被删/取不到的 UID 会直接缺席 —— 按位置配会**整体错位**
+      // （把 A 的正文安到 B 头上，等于把 A 的回复算成 B 回了你）。
+      let li = 0;
+      for (let i = 0; i < f.lines.length; i++) {
+        const line = f.lines[i];
+        if (!/\{\d+\+?\}\s*$/.test(line)) continue;   // 不是"后面跟着 literal"的那种行
+        const raw = f.literals[li++];
+        if (!raw) continue;
+        // ⚠️ UID 的位置**两种形态都存在**，实测踩过：
+        //   A：`* 3 FETCH (UID 3 BODY[] {9069}`        ← UID 在同一行
+        //   B：`* 3 FETCH (BODY[] {9069}` … ` UID 3)`  ← UID 在 **literal 之后的下一行**
+        //   **Lark 走的是 B。** 我第一版只认 A → 一封都配不上 → fetched=0 →
+        //   跟原来那个病一模一样（静默地一封都收不到）。两种都认。
+        //   绝不拿 `* 3` 里那个数字兜底：那是**序号(seq)不是 UID**，用它会整体错位。
+        const um = line.match(/UID\s+(\d+)/i) || (f.lines[i + 1] || "").match(/UID\s+(\d+)/i);
+        if (um) messages.push({ uid: Number(um[1]), raw });
+        else console.error(`IMAP: 取到正文但读不出 UID，跳过。行=${line.slice(0, 80)}`);
+      }
+      // ⚠️ 拿到了正文却一个 UID 都配不出 = **解析器坏了**，不是"没有新邮件"。
+      //    这两件事在旧代码里长得一模一样（都是 messages=[]）→ 必须让它响，
+      //    否则又是一次"静默断了不知道多久"。
+      if (f.literals.length && !messages.length) {
+        throw new Error(`IMAP 解析失败：取到 ${f.literals.length} 封正文但一个 UID 都读不出（服务器响应格式可能变了）`);
+      }
     }
 
     await runCmd(rd, wr, "a9", "LOGOUT").catch(() => {});

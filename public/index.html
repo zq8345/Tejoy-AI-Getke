@@ -1281,6 +1281,7 @@
       if (isFlipPileView()) { await renderFlipPile(); return; }
       const box = $("#flip-pile"), tbl = document.querySelector('.main table');
       if (box) box.style.display = "none"; if (tbl) tbl.style.display = "";
+      renderOrphans();   // 批⑧：孤儿回复条（只在「已回复」格出现；不 await，别让它拖慢列表）
       const { leads } = await fetch(`/api/leads?${filterQuery()}`).then(r=>r.json());
       $("#empty").style.display = leads.length ? "none" : "block";
       _loadedIds = leads.map(l => String(l.id));
@@ -2246,6 +2247,42 @@
         body:`客户回复摘要：${r0.summary||'(无)'}\n\n—— 以下是 AI 起草（仅供参考，请复制到邮箱里自己发；系统不会自动发送）——\n\n${res.draft||''}`,
         confirmText:"知道了", cancelText:"关闭",
       });
+    };
+    // ===== 批⑧ Bug2 第三条：孤儿回复条 =====
+    // 「已回复」格的数据源是 /api/leads?group=replied —— **每行一个线索**。
+    // 匹配不上的回复没有线索 → 在那个页面上永远不可能出现 → 入库即沉底 = 等于丢了。
+    // 所以单独在页顶列出来，并且能一键挂到某条线索上。
+    async function renderOrphans(){
+      let el = $("#orphan-strip");
+      if (current !== 'replied'){ if (el) el.style.display='none'; return; }
+      const { orphans=[] } = await fetch("/api/replies/orphans").then(r=>r.json()).catch(()=>({orphans:[]}));
+      if (!el){
+        el = document.createElement("div"); el.id = "orphan-strip";
+        const tbl = document.querySelector('.main table');
+        if (tbl && tbl.parentNode) tbl.parentNode.insertBefore(el, tbl);
+      }
+      if (!orphans.length){ el.style.display='none'; return; }
+      el.style.display=''; el.style.cssText += ";margin:0 0 10px;border:1px solid #6b4a1a;background:#2a1f10;border-radius:8px;padding:10px 12px";
+      el.innerHTML = `<div style="font-weight:600;color:#f0b849;margin-bottom:6px">⚠️ ${orphans.length} 封回复没匹配到线索 —— 这是真人给你回的信，别让它烂在这</div>`
+        + orphans.map(o=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid #3a2d18">
+            <span class="pill" style="background:${catColor[o.category]||'#555'};color:#fff;flex-shrink:0">${esc(catLabel[o.category]||o.category||'未分类')}</span>
+            <b style="flex-shrink:0">${esc(o.from_email)}</b>
+            <span class="muted" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(o.content||'')}">${esc(o.summary||o.subject||'')}</span>
+            <span style="flex:1"></span>
+            <button class="btn" style="flex-shrink:0" onclick="linkOrphan(${o.id},'${esc(o.from_email)}')">关联到线索…</button>
+          </div>`).join("");
+    }
+    // 人工关联：三层匹配也有兜不住的时候（换域名回、私人邮箱回）—— 那时得有人能一键接上
+    window.linkOrphan = async (replyId, from) => {
+      const v = prompt(`把 ${from} 的这封回复挂到哪条线索？\n\n填线索 ID（在列表里点开那家公司，地址栏/详情里能看到）：`);
+      const leadId = Number((v||"").trim().replace(/^#/,''));
+      if (!leadId) return;
+      const res = await fetch(`/api/replies/${replyId}/link`, {
+        method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({ lead_id: leadId })
+      }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (res.error){ toolMsg("关联失败: "+esc(res.error)); return; }
+      toolMsg(`✅ 已挂到 <b>${esc(res.company_name)}</b>（#${res.lead_id}），状态 → ${esc(res.status)}`);
+      loadStats(); loadList(); loadFacets();
     };
     // 手动拉取新回复（Cron 每 6 小时也会自动拉）
     window.toolFetchReplies = async () => {

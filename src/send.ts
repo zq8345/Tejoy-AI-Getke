@@ -200,6 +200,11 @@ async function deliverEmail(env: Env, lead: any, subject: string, body: string, 
 
   const token = crypto.randomUUID();
   const unsubUrl = `${appUrl}/u/${token}`;
+  // ⭐ 批⑧ Bug2：**我们自己指定 Message-ID**，而不是去猜 Resend 生成成什么样。
+  //   回信的 In-Reply-To 会指向它 → 这是唯一"与发件地址无关"的确定匹配手段
+  //   （对方用任何地址回都认得出 —— 今天 Michael 用 michael@ 回我们发给 sales@ 的信就是这个情况）。
+  //   域名用发件域，符合 RFC 5322 对 msg-id 的要求（右半边应是发信方的域）。
+  const ourMessageId = `<${crypto.randomUUID()}@${(senderEmail.split("@")[1] || "tejoy.net")}>`;
 
   const ins = await env.DB.prepare(
     "INSERT INTO emails (lead_id, subject, body, status, kind, unsubscribe_token, auto_sent, created_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, datetime('now'))"
@@ -220,6 +225,8 @@ async function deliverEmail(env: Env, lead: any, subject: string, body: string, 
         headers: {
           "List-Unsubscribe": `<${unsubUrl}>, <mailto:${senderEmail}?subject=unsubscribe>`,
           "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          // ⭐ 批⑧ Bug2：自己指定 Message-ID → 回信的 In-Reply-To 会指向它 → 精确认领（与发件地址无关）
+          "Message-ID": ourMessageId,
         },
       }),
     });
@@ -229,9 +236,15 @@ async function deliverEmail(env: Env, lead: any, subject: string, body: string, 
       return { ok: false, id: lead.id, error: `Resend ${res.status}: ${t.slice(0, 200)}` };
     }
     const data: any = await res.json();
+    // ⭐ 批⑧ Bug2：存下这封信的 **Message-ID**，回信的 In-Reply-To 会指向它 → 精确认领。
+    //   我们**自己指定** Message-ID（上面 headers 里传了），而不是去猜 Resend 生成的格式 ——
+    //   猜错的话 layer① 会永远静默失效（匹配不上又不报错，跟这次的病一模一样）。
+    //   ⚠️ 但"Resend 到底认不认我们指定的 Message-ID"**尚未在真信上验证过**（见 commit message）。
+    //   所以这里存的是"我们要求的值"；万一 Resend 覆盖了它，layer① 失效但 layer②③ 照常兜底，
+    //   不会比现在更差。真信验证一到手就能确认。
     await env.DB.prepare(
-      "UPDATE emails SET status='sent', provider_id=?, sent_at=datetime('now') WHERE id=?"
-    ).bind(data?.id ?? null, emailId).run();
+      "UPDATE emails SET status='sent', provider_id=?, message_id=?, sent_at=datetime('now') WHERE id=?"
+    ).bind(data?.id ?? null, ourMessageId, emailId).run();
     return { ok: true, id: lead.id };
   } catch (e: any) {
     await env.DB.prepare("UPDATE emails SET status='failed' WHERE id=?").bind(emailId).run();
