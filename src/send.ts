@@ -168,6 +168,21 @@ async function deliverEmail(env: Env, lead: any, subject: string, body: string, 
       "SELECT id FROM emails WHERE lead_id=? AND kind='initial' AND status IN ('sent','queued') LIMIT 1"
     ).bind(lead.id).first();
     if (dup) return { ok: false, id: lead.id, skipped: "已发过初次开发信（幂等跳过）" };
+    // ⭐ 批⑤D 跨渠道查重：Joe 已经在工作台用 WhatsApp/LinkedIn 碰过这家了 → **别再发首封开发信**。
+    //   场景（会真发生）：这家今天没邮箱进了工作台 → Joe 在 WhatsApp 上跟他聊过 →
+    //   过些天 Hunter 补到邮箱 或 下轮分析从官网抓到邮箱 → 它突然满足"≥60+有邮箱" →
+    //   自动批准 + 自动发送 → **给一个已经在聊的人发一封"你好，冒昧打扰"的冷邮件**。
+    //   那是 Joe 亲手建立的关系，一封机器冷邮件足够毁掉它。
+    //   这条查重放在幂等这里而不是取批的 WHERE 里：取批漏一个口子就前功尽弃，
+    //   而 deliverEmail 是**所有**发信的唯一必经之路（自动/手动/human override 全走它）。
+    //   跟进信(followup)不受此限：那是对已建立联系的正常推进，不是"冒昧打扰"。
+    const benched = await env.DB.prepare(
+      "SELECT bench_contacted_at, bench_channel FROM leads WHERE id=? AND bench_contacted_at IS NOT NULL"
+    ).bind(lead.id).first<{ bench_contacted_at: string; bench_channel: string }>();
+    if (benched) {
+      return { ok: false, id: lead.id,
+        skipped: `已在工作台用「${benched.bench_channel || "其它渠道"}」联系过（${String(benched.bench_contacted_at).slice(0, 10)}），不再发冷邮件` };
+    }
   }
   const senderEmail = env.SENDER_EMAIL || "hello@tejoy.net";
   const senderName = env.SENDER_NAME || "Tejoy";

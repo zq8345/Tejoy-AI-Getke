@@ -80,6 +80,29 @@
     .st-new { background:#33383f; color:#cfd6e2; }
     /* 待分析：机器还没处理完，人不用做什么 → 比「待审核」(等你审) 更暗、更安静，别抢注意力 */
     .st-todo { background:#2b2f36; color:#8c94a3; }
+    /* 批⑤D 触达工作台：每家一张卡，点开才生成草稿 */
+    .bn-list { display:flex; flex-direction:column; gap:8px; }
+    .bn-card { border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+    .bn-card.bn-done { opacity:.62; }
+    .bn-head { display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; background:var(--panel2,#22262c); flex-wrap:wrap; }
+    .bn-head:hover { background:#282d34; }
+    .bn-co { font-size:13.5px; }
+    .bn-chips { font-size:13px; letter-spacing:2px; }
+    .bn-caret { margin-left:auto; color:var(--muted); }
+    .bn-body { border-top:1px solid var(--border); padding:10px 12px; }
+    .bn-ev { font-size:12.5px; color:var(--muted); line-height:1.6; margin-bottom:9px; }
+    .bn-drafts { display:flex; flex-direction:column; gap:8px; }
+    .bn-draft { border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+    .bn-dh { display:flex; align-items:center; gap:8px; padding:6px 9px; background:#1c2026; font-size:12px; color:var(--muted); }
+    .bn-dacts { margin-left:auto; display:flex; gap:5px; align-items:center; }
+    .bn-dtxt { padding:8px 10px; font-size:13px; line-height:1.65; white-space:pre-wrap; }
+    .bn-foot { display:flex; gap:6px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+    /* 批⑤C 收件箱底部被动计数：**不是卡片** —— 它不急，不该跟"有人回你了"抢同一种视觉重量 */
+    .tri-passive { margin-top:14px; padding:10px 12px; border-top:1px dashed var(--border);
+      font-size:12.5px; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .tri-passive b { color:var(--text); }
+    .tri-passive .hint { flex-basis:100%; margin-top:2px; }
+    .linklike { background:none; border:none; color:var(--blue); cursor:pointer; font-size:12.5px; padding:0; text-decoration:underline; }
     /* 批⑤B 翻牌堆：组名要能一眼扫，证据摘要要能一行看懂 */
     .fp-intro { font-size:13px; color:var(--text); margin:8px 0 12px; line-height:1.7; }
     .fp-intro .hint { display:block; margin-top:2px; }
@@ -252,7 +275,7 @@
     .bk-go { align-self:flex-start; margin-top:6px; background:none; border:1px solid var(--border);
              color:var(--blue); font-size:11px; padding:2px 8px; border-radius:6px; cursor:pointer; }
     .bk-go:hover { border-color:var(--blue); }
-    /* 批④ 待办事项 = 分诊台：按紧急度排的一列，0 的不显示，每条一句人话 + 一个跳转 */
+    /* 批⑤C 收件箱：按离钱距离排的一列，0 的不显示，每条一句人话 + 一个主按钮 */
     .tri-list { display:flex; flex-direction:column; gap:10px; }
     .tri-row { display:flex; align-items:center; gap:12px; background:var(--panel); border:1px solid var(--border);
                border-left:3px solid var(--border); border-radius:10px; padding:13px 15px; transition:border-color .15s ease; }
@@ -428,11 +451,11 @@
     <!-- 批③顶栏收口：顶栏 = logo + 搜索，右侧空。
          所有动作都回到它所属的阶段页；设置移到左栏底部。
          群发→待发送页「全部发送」；回复箱→已回复页；批量分析→待分析页；批量找邮箱/Hunter→待审批页；导入CSV→找客户页。 -->
-    <div class="hdr-left"><img src="https://tejoy.com/static/tejoy-logo-white.png" alt="TEJOY" title="回待办事项首页" onclick="openToday()" style="height:22px;width:auto;display:block"></div>
+    <div class="hdr-left"><img src="https://tejoy.com/static/tejoy-logo-white.png" alt="TEJOY" title="回收件箱" onclick="openToday()" style="height:22px;width:auto;display:block"></div>
     <div class="hdr-right-zone">
       <input type="search" id="q" placeholder="搜索公司 / 邮箱 / 域名…" />
       <!-- 左栏导航的隐藏代理按钮（左栏 side-nav 的 handler 靠它们，勿删） -->
-      <button id="btn-today" style="display:none">待办事项</button>
+      <button id="btn-today" style="display:none">收件箱</button>
       <button id="btn-discover" style="display:none">找客户</button>
       <button id="btn-dashboard" style="display:none">数据看板</button>
     </div>
@@ -860,9 +883,10 @@
       // 侧栏顶部：📋今日待办 + 🎯找客户（导航项，点击复用现有隐藏按钮 handler）；下方=竖向漏斗
       const tabHtml = t => `<div class="tab ${t.key===current?"active":""}" data-k="${t.key}">${t.label} <span class="cnt">(${groupCount[t.key]??0})</span></div>`;
       const chain = TABS.slice(1);
-      // 批③B 顶部导航：待办事项(原今日待办改名) / 找客户 / 数据看板 / 🔔待跟进(独立视图，口径=原 f-due 跨阶段)
-      const navTop = `<div class="side-nav" data-nav="today" onclick="document.getElementById('btn-today').click()">📋 待办事项</div>`
+      // 批③B 顶部导航：收件箱(批⑤C 由「待办事项」重构而来) / 找客户 / 数据看板 / 🔔待跟进(独立视图，口径=原 f-due 跨阶段)
+      const navTop = `<div class="side-nav" data-nav="today" onclick="document.getElementById('btn-today').click()">📥 收件箱</div>`
         + `<div class="side-nav" data-nav="found" onclick="document.getElementById('btn-discover').click()">🎯 找客户</div>`
+        + `<div class="side-nav" data-nav="bench" onclick="openBench()">💼 触达工作台</div>`
         + `<div class="side-nav" data-nav="dashboard" onclick="document.getElementById('btn-dashboard').click()">📊 数据看板</div>`
         + `<div class="side-nav" data-nav="due" onclick="openDue()">🔔 待跟进</div>`
         + `<div class="side-div"></div>`;
@@ -2308,25 +2332,152 @@
       const clicks = (d.engagedToday||[]).filter(l=>l.has_click);
       const serper = d.serper||{};
       const overBudget = serper.budget!=null && serper.usedToday>=serper.budget && serper.budget>0;
-      // 紧急度从高到低；n=0 的整条不渲染
+      const br = d.breaker||{};
+      // ⭐ 批⑤C 收件箱：按**离钱距离**排的一列。
+      //   两档制下 Joe 的活只剩三类：有人回你了 / 机器碰不到只能你手动碰 / 机器出事了。
+      //   删掉的卡（它们都在喊 Joe 去干机器的活）：
+      //     ·「N 家现在就能发」→ 机器自动发了
+      //     ·「N 家已打分待审批」→ ≥60 自动批准了，剩下的 <60 是翻牌堆（进底部被动计数，不出卡片）
+      //   保留但总工没列的两条，理由写在各自后面。
       const items = [
-        { n:(d.hotReplies||[]).length, cls:'tri-hot',  icon:'🔥', text:n=>`<b>${n}</b> 条客户回复还没处理`,        sub:'有人主动回你了——这是最该先看的', go:'去已回复', fn:"gotoGroup('replied')" },
+        { n:(d.talking||[]).length,    cls:'tri-hot',  icon:'🔥', text:n=>`<b>${n}</b> 家谈判中的客户回话了`,      sub:'已经在来回聊了——离钱最近的一批，别晾着', go:'去已回复', fn:"gotoGroup('replied')" },
+        { n:(d.fresh||[]).length,      cls:'tri-hot',  icon:'💬', text:n=>`<b>${n}</b> 家新来话`,                  sub:'第一次回你——趁热接上', go:'去已回复', fn:"gotoGroup('replied')" },
+        // 点击：总工的 4 条里没列，但它是真的离钱距离信号（点了链接=有意向），删了会丢东西 → 留
         { n:clicks.length,             cls:'tri-warm', icon:'👀', text:n=>`今天有 <b>${n}</b> 家点了你的开发信`,    sub:'点过链接=有意向，趁热跟进转化最高', go:'去已查看', fn:"gotoGroup('viewed')" },
-        { n:(d.dueFollowups||[]).length, cls:'',       icon:'🔔', text:n=>`<b>${n}</b> 家今天该跟进`,              sub:'你自己定的下一步日期到了', go:'去待跟进', fn:"openDue()" },
-        { n:d.sendable||0,             cls:'',         icon:'📤', text:n=>`<b>${n}</b> 家现在就能发`,              sub:'已批准 · 有邮箱 · ≥60分 · 未压制（真能发出去的）', go:'去待发送', fn:"gotoGroup('ready')" },
-        { n:d.reviewCount||0,          cls:'',         icon:'✅', text:n=>`<b>${n}</b> 家已打分待审批`,            sub:'审完才能进待发送', go:'去待审批', fn:"gotoGroup('review')" },
+        { n:d.benchQueue||0,           cls:'tri-warm', icon:'💼', text:n=>`<b>${n}</b> 家等你手动触达`,            sub:'≥60分但没邮箱——机器发不了，只能你用社媒/电话碰', go:'去工作台', fn:"openBench()" },
+        // 该跟进：总工没列，但这是 Joe **自己定的**下一步日期（工作台「已联系」也会往这里写 +4 天）→ 留
+        { n:(d.dueFollowups||[]).length, cls:'',       icon:'🔔', text:n=>`<b>${n}</b> 家今天该跟进`,              sub:'你自己定的下一步日期到了（含工作台联系过的 +4 天回看）', go:'去待跟进', fn:"openDue()" },
+        { n:br.tripped?1:0,            cls:'tri-warn', icon:'⛔', text:()=>`自动发送已熔断，现在没在自动发信`,      sub:esc(br.reason||'退订率超阈值')+'　不会自动恢复——查完去发信设置手动重开', go:'去发信设置', fn:"$('#btn-sendcfg').click()" },
         { n:overBudget?1:0,            cls:'tri-warn', icon:'⚠️', text:()=>`今日 Serper 搜索预算已用满（${serper.usedToday}/${serper.budget}）`, sub:'自动搜索已停，明天恢复；要继续可去找客户页调高预算', go:'去找客户', fn:"openDiscover()" },
       ].filter(x=>x.n>0);
       const rows = items.length
         ? items.map(x=>`<div class="tri-row ${x.cls}">
             <span class="tri-icon">${x.icon}</span>
-            <span class="tri-text">${x.text(x.n)}<span class="tri-sub">${esc(x.sub)}</span></span>
+            <span class="tri-text">${x.text(x.n)}<span class="tri-sub">${x.sub}</span></span>
             <button class="tri-go" onclick="${x.fn}">${esc(x.go)} →</button>
           </div>`).join('')
-        : `<div class="tri-empty">🎉 今天没有待处理的事。<br><span class="hint">想加线索去「🎯 找客户」；想看健康度去「📊 数据看板」。</span></div>`;
-      $("#v-page").innerHTML = pageHeader('📋 待办事项','今天先干哪一件 · 按紧急度排 · 点进去在那一格里处理')
-        + `<div class="tri-list">${rows}</div>`;
+        : `<div class="tri-empty">今天没你的事，机器在跑。<br><span class="hint">有人回话 / 有需要手动碰的 / 机器出事了，才会出现在这里。</span></div>`;
+      // 翻牌堆 = **底部一行被动计数，不出卡片**：它不是"今天必须做"，是"有空时该扫一眼"。
+      // 出成卡片会天天挂在那儿变成背景噪音，反而让人对真正紧急的事脱敏。
+      const passive = (d.flipPile||0) > 0
+        ? `<div class="tri-passive">机器扔掉了 <b>${d.flipPile}</b> 家还没人复核
+             <button class="linklike" onclick="openFlipPile()">去翻牌堆扫一眼 →</button>
+             <span class="hint">误杀一个真客户 = 损失一单且不可见，所以这堆值得偶尔看看；但它不急。</span></div>`
+        : '';
+      $("#v-page").innerHTML = pageHeader('📥 收件箱','需要你的事 · 按离钱距离排 · 机器能做的都不在这里')
+        + `<div class="tri-list">${rows}</div>` + passive;
     }
+    // ⭐ 批⑤D 通用触达工作台：服务**机器碰不到的人**（≥60 分、没邮箱、但有社媒/电话）。
+    //   这里没有任何自动发送，全是 Joe 的手 —— 系统只负责把 10 分钟的准备压到 30 秒。
+    let _benchLeads = {};   // id → lead（卡片渲染与草稿要用它的 channels/company_name）
+    const BENCH_CH = {
+      whatsapp:{ic:"🟢", label:"WhatsApp", open:(v,co)=>`https://wa.me/${String(v).replace(/[^\d]/g,"")}?text=`},
+      linkedin:{ic:"💼", label:"LinkedIn（连接请求 ≤300 字）", open:(v)=>v},
+      facebook:{ic:"📘", label:"Facebook", open:(v)=>v},
+      instagram:{ic:"📷", label:"Instagram", open:(v)=>v},
+      telegram:{ic:"✈️", label:"Telegram", open:(v)=>v},
+      phone:{ic:"📞", label:"电话（3 条要点，不照稿念）", open:(v)=>`tel:${v}`},
+    };
+    window.openBench = async () => {
+      showMainView('bench');
+      $("#v-page").innerHTML = pageHeader('💼 触达工作台','机器碰不到的人 · 全靠你的手 · 系统只负责把准备压到 30 秒') + `<p class="hint">加载中…</p>`;
+      const d = await fetch("/api/bench").then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (d.error){ $("#v-page").innerHTML = pageHeader('💼 触达工作台','') + `<p class="hint">加载失败：${esc(d.error)}</p>`; return; }
+      if (!d.total){ $("#v-page").innerHTML = pageHeader('💼 触达工作台','') +
+        `<div class="tri-empty">队列是空的。<br><span class="hint">这里放的是「≥${SCORE_LINE}分 但没邮箱、有社媒/电话」的公司 —— 机器发不了，只能你手动碰。</span></div>`; return; }
+      _benchLeads = {}; for (const l of d.leads) _benchLeads[l.id] = l;   // 卡片里的渠道/公司名要用
+      $("#v-page").innerHTML = pageHeader('💼 触达工作台', `${d.pending} 家待联系 · 按分数降序 · 这里没有自动发送，全是你的手`)
+        + `<div class="bn-list">${d.leads.map(l=>benchCard(l)).join('')}</div>`;
+    };
+    function benchCard(l){
+      let ch={}; try{ ch = JSON.parse(l.channels||"{}"); }catch{}
+      const done = !!l.bench_contacted_at;
+      return `<div class="bn-card ${done?'bn-done':''}" id="bn-${l.id}">
+        <div class="bn-head" onclick="toggleBench(${l.id})">
+          ${scoreBadge(l.match_score)}
+          <b class="bn-co">${esc(l.company_name)||"(未命名)"}</b>
+          ${l.website?`<a class="wsite" href="${esc(l.website)}" target="_blank" onclick="event.stopPropagation()">${esc(hostOf(l.website))}</a>`:""}
+          ${l.customer_category?`<span class="pill ptype">${esc(l.customer_category)}</span>`:""}
+          ${l.country?`<span class="hint">${esc(countryName(l.country))}</span>`:""}
+          <span class="bn-chips">${Object.keys(ch).filter(k=>BENCH_CH[k]).map(k=>BENCH_CH[k].ic).join(" ")}</span>
+          ${done?`<span class="pill" style="background:#2b6b4f;color:#fff">已联系 ${esc(String(l.bench_contacted_at).slice(5,10))} · ${esc(l.bench_channel||"")}</span>`:""}
+          <span class="bn-caret" id="bnc-${l.id}">▸</span>
+        </div>
+        <div class="bn-body" id="bnb-${l.id}" style="display:none">
+          <div class="bn-ev">${esc(l.evidence)||"<span class='muted'>（无判断理由）</span>"}
+            ${l.needed_products?`<div style="margin-top:5px">${esc(l.needed_products).split(/[、,，;；]/).map(p=>p.trim()).filter(Boolean).map(p=>`<span class="tag">${esc(p)}</span>`).join("")}</div>`:""}</div>
+          <div class="bn-drafts" id="bnd-${l.id}"><span class="hint">草稿点开这家才生成（省额度）…</span></div>
+          <div class="bn-foot">
+            <button class="btn-green mini" onclick="benchContacted(${l.id})">✅ 已联系</button>
+            <button class="btn-won mini" onclick="benchReplied(${l.id})">🎉 他回了</button>
+            <button class="btn-ghost mini" onclick="openDetail(${l.id})">详情</button>
+            <span class="hint" id="bnm-${l.id}"></span>
+          </div>
+        </div></div>`;
+    }
+    window.toggleBench = async (id) => {
+      const b=$("#bnb-"+id), c=$("#bnc-"+id); if(!b) return;
+      const open = b.style.display==="none";
+      b.style.display = open?"":"none"; if(c) c.textContent = open?"▾":"▸";
+      if (open && !b.dataset.loaded) { b.dataset.loaded="1"; await loadBenchDrafts(id); }
+    };
+    // 懒生成：点开这家才调模型（69 家一口气全生成是白烧额度，Joe 一天也碰不了 69 家）
+    async function loadBenchDrafts(id, force){
+      const box = $("#bnd-"+id);
+      box.innerHTML = `<span class="hint">正在按各渠道分别写草稿…（渠道跟邮件是两种写法，要现写）</span>`;
+      const d = await fetch(`/api/bench/${id}/drafts${force?"?force=1":""}`).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (d.error){ box.innerHTML = `<span class="hint">草稿生成失败：${esc(d.error)}</span>`; return; }
+      const lead = _benchLeads[id] || {};
+      let ch={}; try{ ch = JSON.parse(lead.channels||"{}"); }catch{}
+      const items = Object.entries(d.drafts||{}).map(([k,txt])=>{
+        const meta = BENCH_CH[k]; if(!meta) return "";
+        const val = ch[k]||"";
+        const href = val ? meta.open(val, lead.company_name) : "";
+        return `<div class="bn-draft">
+          <div class="bn-dh"><span>${meta.ic} ${esc(meta.label)}</span>
+            ${k==='linkedin'?`<span class="hint">${String(txt).length}/300</span>`:''}
+            <span class="bn-dacts">
+              ${href?`<a class="btn-ghost mini" href="${esc(href)}${k==='whatsapp'?encodeURIComponent(String(txt)):''}" target="_blank">↗ 打开</a>`:''}
+              ${k!=='phone'?`<button class="btn-ghost mini" onclick="copyText(${JSON.stringify(String(txt)).replace(/"/g,'&quot;')},this)">复制</button>`:''}
+            </span></div>
+          <div class="bn-dtxt">${esc(String(txt))}</div>
+        </div>`;
+      }).join("");
+      box.innerHTML = (items || `<span class="hint">没有可写的渠道。</span>`)
+        + `<div style="margin-top:5px"><button class="btn-ghost mini" onclick="loadBenchDrafts(${id},1)">↻ 重写草稿</button>
+           ${d.cached?'<span class="hint" style="margin-left:6px">（缓存，点重写可换一版）</span>':''}</div>`;
+    }
+    window.loadBenchDrafts = loadBenchDrafts;
+    window.copyText = (t, el) => { navigator.clipboard.writeText(t).then(()=>{ const o=el.textContent; el.textContent="已复制"; setTimeout(()=>el.textContent=o,1200); }); };
+    window.benchContacted = async (id) => {
+      const lead = _benchLeads[id]||{}; let ch={}; try{ ch=JSON.parse(lead.channels||"{}"); }catch{}
+      const opts = Object.keys(ch).filter(k=>BENCH_CH[k]);
+      const which = opts.length===1 ? opts[0] : await pickChannel(opts);
+      if (!which) return;
+      const r = await fetch(`/api/bench/${id}/contacted`,{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({channel:which})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (r.error){ $("#bnm-"+id).textContent = "失败: "+r.error; return; }
+      $("#bnm-"+id).textContent = `✅ 已记「${which}」联系过，4 天后提醒你回看`;
+      setTimeout(openBench, 900);
+    };
+    async function pickChannel(opts){
+      if (!opts.length) return null;
+      const label = opts.map((k,i)=>`${i+1}. ${BENCH_CH[k].label}`).join("\n");
+      const ok = await uiConfirm({ title:"用哪个渠道联系的？", body:`这家有多个渠道：\n${label}\n\n默认记第 1 个（${BENCH_CH[opts[0]].label}）。`, confirmText:"就记第 1 个" });
+      return ok ? opts[0] : null;
+    }
+    window.benchReplied = async (id) => {
+      if(!(await uiConfirm({ title:"他回你了？", body:"这家会转到「已回复」，并出现在**收件箱最上面**（任何渠道的回复都算）。", confirmText:"是，他回了" }))) return;
+      const r = await fetch(`/api/bench/${id}/replied`,{method:"POST"}).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (r.error){ $("#bnm-"+id).textContent = "失败: "+r.error; return; }
+      openBench(); loadStats();
+    };
+    // 从收件箱直达翻牌堆：待审批格 + <60 筛选（就是 B 那条路，不造新房间）
+    window.openFlipPile = () => {
+      current = 'review'; showMainView('list');
+      const s = $("#f-score"); if (s) s.value = `0-${SCORE_LINE}`;
+      loadStats(); loadList(); loadFacets();
+    };
     $("#btn-today").onclick = openToday;
     $("#today-overlay").onclick = (e) => { if (e.target.id==="today-overlay") closeToday(); };
 

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { basicAuth } from "hono/basic-auth";
 import { parseCsv, mapRowToLead } from "./csv";
 import { analyzeLead, getProfile, DEFAULT_PROFILE } from "./service";
-import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese, isTrustedDirectorySource } from "./openrouter";
+import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese, isTrustedDirectorySource, writeBenchDrafts } from "./openrouter";
 import { scrapeSite } from "./scrape";
 import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed, autoSentToday, getBreakerStatus, BREAKER_WINDOW, BREAKER_THRESHOLD } from "./send";
 import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
@@ -725,6 +725,87 @@ app.post("/api/leads/:id/human-approve", async (c) => {
   return c.json({ ok: true, id, score: cur.match_score, note: "已加入待发送（人工放行）。发送仍受每日上限/压制名单/幂等约束。" });
 });
 
+// ---- 批⑤D 通用触达工作台 ----
+// 服务对象：**机器碰不到的人** —— ≥60 分、没邮箱、但有社媒/电话渠道（当前约 69 家，还在涨）。
+// 这里**没有任何自动发送**，全部是 Joe 的手。系统只负责把 10 分钟的准备压到 30 秒。
+app.get("/api/bench", async (c) => {
+  const rows = (await c.env.DB.prepare(
+    `SELECT l.id, l.company_name, l.website, l.country, l.channels, l.bench_queued,
+            l.bench_contacted_at, l.bench_channel, l.next_action_date,
+            a.match_score, a.customer_type, a.customer_category, a.reason, a.needed_products
+       FROM leads l LEFT JOIN lead_analysis a ON a.lead_id = l.id
+      WHERE (l.email IS NULL OR l.email='')
+        AND l.channels IS NOT NULL AND l.channels != '' AND l.channels != '{}'
+        AND l.status NOT IN ('won','ignored','blacklisted','unsubscribed','bounced','replied')
+        AND (a.match_score >= ${APPROVE_MIN_SCORE} OR l.bench_queued = 1)
+      ORDER BY (l.bench_contacted_at IS NOT NULL), a.match_score DESC, l.id ASC LIMIT 200`
+  ).all()).results as any[];
+  return c.json({
+    total: rows.length,
+    pending: rows.filter((r) => !r.bench_contacted_at).length,
+    leads: rows.map((r) => ({ ...r, evidence: String(r.reason || "").replace(/^【[^】]*】\s*/, "").slice(0, 160) })),
+  });
+});
+
+// 工作台草稿：**懒生成**（点开这家才调模型）+ 缓存。
+// 69 家一口气全生成是白烧额度 —— Joe 一天碰不了 69 家，而且渠道稿子跟邮件是两种写法，生成不便宜。
+app.get("/api/bench/:id/drafts", async (c) => {
+  const id = Number(c.req.param("id"));
+  const force = c.req.query("force") === "1";
+  const lead = await c.env.DB.prepare(
+    `SELECT l.id, l.company_name, l.website, l.channels, a.match_score, a.customer_type, a.reason, a.needed_products
+       FROM leads l LEFT JOIN lead_analysis a ON a.lead_id=l.id WHERE l.id=?`
+  ).bind(id).first<any>();
+  if (!lead) return c.json({ error: "not found" }, 404);
+  const cacheKey = `bench_drafts_${id}`;
+  if (!force) {
+    const cached = await getSetting(c.env, cacheKey, "");
+    if (cached) { try { return c.json({ ...JSON.parse(cached), cached: true }); } catch { /* 坏缓存就重生成 */ } }
+  }
+  let ch: Record<string, string> = {};
+  try { ch = JSON.parse(lead.channels || "{}"); } catch { /* 坏 JSON 当没渠道 */ }
+  const drafts = await writeBenchDrafts(c.env, lead, Object.keys(ch));
+  await setSetting(c.env, cacheKey, JSON.stringify({ drafts }));
+  return c.json({ drafts, cached: false });
+});
+
+// 工作台「已联系」：记渠道 + 日期，默认 +4 天提醒回看。
+// ⭐ 必须落库不能只留在 UI：机器的跟进逻辑要认识它 —— 最关键的是
+//    "以后补到邮箱时，别再给一个已经在 WhatsApp 上联系过的人发首封开发信"（查重逻辑见 send.ts）。
+app.post("/api/bench/:id/contacted", async (c) => {
+  const id = Number(c.req.param("id"));
+  const b = await c.req.json<{ channel?: string }>().catch(() => ({}));
+  const channel = String(b.channel || "").trim().slice(0, 20) || "unknown";
+  const cur = await c.env.DB.prepare("SELECT company_name FROM leads WHERE id=?").bind(id).first<{ company_name: string }>();
+  if (!cur) return c.json({ error: "not found" }, 404);
+  await c.env.DB.prepare(
+    `UPDATE leads SET bench_contacted_at=datetime('now'), bench_channel=?,
+            next_action=COALESCE(NULLIF(next_action,''), ?), next_action_date=date('now','+4 days'),
+            updated_at=datetime('now') WHERE id=?`
+  ).bind(channel, `工作台已用 ${channel} 联系，看看有没有回`, id).run();
+  return c.json({ ok: true, id, channel, next_action_date: "+4 天" });
+});
+
+// 工作台「他回了」→ 进已回复。任何渠道的回复都算 —— Joe 在 WhatsApp 上收到的回复，
+// 跟邮件回复一样是"有人回你了"，该出现在收件箱最上面。
+app.post("/api/bench/:id/replied", async (c) => {
+  const id = Number(c.req.param("id"));
+  const cur = await c.env.DB.prepare("SELECT status, bench_channel FROM leads WHERE id=?").bind(id).first<{ status: string; bench_channel: string }>();
+  if (!cur) return c.json({ error: "not found" }, 404);
+  if (["unsubscribed", "blacklisted", "bounced"].includes(cur.status)) {
+    return c.json({ error: `「${cur.status}」是合规终态，不能改` }, 409);
+  }
+  await c.env.DB.prepare("UPDATE leads SET status='replied', updated_at=datetime('now') WHERE id=?").bind(id).run();
+  // 落一条 replies 记录：让收件箱的「新来话」和时间线都能认出它（渠道回复 ≠ 邮件回复，但都是回复）
+  // ⚠️ 列名是 content 不是 body（schema.sql 里 replies 表的真实定义）
+  await c.env.DB.prepare(
+    `INSERT INTO replies (lead_id, from_email, subject, content, category, summary, received_at)
+     VALUES (?, ?, ?, ?, 'interested', ?, datetime('now'))`
+  ).bind(id, `(${cur.bench_channel || "渠道"})`, "渠道回复", "（Joe 在工作台标记：对方回复了）",
+         `${cur.bench_channel || "渠道"}上回复了`).run();
+  return c.json({ ok: true, id });
+});
+
 // ---- 翻牌堆 →「转工作台」：<60 但有社媒渠道的，进 D 的手动触达队列 ----
 // 工作台里没有任何自动发送，全是 Joe 的手 → 这个标记不像 human_approved 那样敏感，
 // 但同样只接受单条 id、只由这个端点写。
@@ -824,11 +905,51 @@ app.get("/api/today", async (c) => {
         AND lower(l.email) NOT IN (SELECT email FROM suppressed_emails)`
   ).first<{ n: number }>())?.n || 0;
   const serper = await getSerperUsage(c.env);
+
+  // ⭐ 批⑤C 收件箱：按"离钱距离"排的一列。
+  //   两档制下 Joe 的活只剩三类：**有人回你了**（离钱最近）、**机器碰不到只能你手动碰的**（工作台）、
+  //   **机器出事了**（熔断）。「N 家能发」「N 家待审批」这类已经不该出卡片 —— 机器自己会做。
+  //   ⑤ 谈判中 vs 新来话：按这条线索**回过几次**分 —— 回过 ≥2 次 = 已经在对话里，离钱更近。
+  const replyDepth = (await db.prepare(
+    `SELECT l.id, l.company_name, COUNT(r.id) AS n,
+            (SELECT r2.summary FROM replies r2 WHERE r2.lead_id=l.id ORDER BY r2.id DESC LIMIT 1) AS last_summary,
+            (SELECT r2.category FROM replies r2 WHERE r2.lead_id=l.id ORDER BY r2.id DESC LIMIT 1) AS last_cat,
+            (SELECT r2.received_at FROM replies r2 WHERE r2.lead_id=l.id ORDER BY r2.id DESC LIMIT 1) AS last_at
+       FROM leads l JOIN replies r ON r.lead_id = l.id
+      WHERE l.status='replied'
+      GROUP BY l.id ORDER BY last_at DESC LIMIT 50`
+  ).all()).results as any[];
+  const talking = replyDepth.filter((r) => r.n >= 2 && r.last_cat !== "not_interested");
+  const fresh = replyDepth.filter((r) => r.n === 1 && r.last_cat !== "not_interested");
+
+  // ⑥ 触达工作台队列：≥60 无邮箱有渠道（机器发不了）+ Joe 从翻牌堆推进来的。详见 D。
+  const benchQueue = (await db.prepare(
+    `SELECT COUNT(*) AS n FROM leads l LEFT JOIN lead_analysis a ON a.lead_id=l.id
+      WHERE (l.email IS NULL OR l.email='')
+        AND l.channels IS NOT NULL AND l.channels != '' AND l.channels != '{}'
+        AND l.status NOT IN ('won','ignored','blacklisted','unsubscribed','bounced','replied')
+        AND l.bench_contacted_at IS NULL
+        AND (a.match_score >= ${APPROVE_MIN_SCORE} OR l.bench_queued = 1)`
+  ).first<{ n: number }>())?.n || 0;
+
+  // ⑦ 翻牌堆积压：**底部被动计数，不出卡片** —— 它不是"今天必须做"，是"有空时该扫"
+  const flipPile = (await db.prepare(
+    `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
+      WHERE l.status IN ('analyzed','pending') AND a.match_score IS NOT NULL AND a.match_score < ${APPROVE_MIN_SCORE}`
+  ).first<{ n: number }>())?.n || 0;
+
+  // ⑧ 系统警报：熔断（自动发送停了而 Joe 不知道 = 比停还糟）
+  const br = await getBreakerStatus(c.env);
+  const trippedAt = await getSetting(c.env, "auto_send_tripped_at", "");
+
   return c.json({
     dueFollowups, hotReplies, engagedToday, actions: sug.actions,
     sendable,                       // 批④：真能发的家数（approved+有邮箱+≥60+未压制）
     reviewCount: sug.reviewCount,   // 待审批
     serper,                         // ⚠️系统警报：Serper 预算
+    // 批⑤C 收件箱
+    talking, fresh, benchQueue, flipPile,
+    breaker: { tripped: !!trippedAt, trippedAt, reason: await getSetting(c.env, "auto_send_trip_reason", ""), rate: Math.round(br.rate * 1000) / 10 },
   });
 });
 
