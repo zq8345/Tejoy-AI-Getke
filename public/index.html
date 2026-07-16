@@ -529,14 +529,17 @@
           <span><b>自动发送</b> <span class="hint">后台每 6h 自动发已批准的；退订率过高会自动熔断</span></span></label>
         <div class="auto-row" style="padding-left:24px">
           <span class="hint">自动发送每日上限</span>
-          <input id="cfg-auto-limit" type="number" min="1" max="200" style="width:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:6px;margin-left:8px">
+          <input id="cfg-auto-limit" type="number" min="1" style="width:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:6px;margin-left:8px">
           <span class="hint" id="cfg-auto-used" style="margin-left:8px"></span>
+          <!-- ⭐ P0-1 的灵魂：填超了**当场告诉他**，绝不悄悄砍。
+               Joe 原话："把每天发多少封的权限交给我，我会根据情况自己去调整。" -->
+          <div class="hint" id="cfg-capacity" style="margin-top:6px"></div>
         </div>
         <div class="auto-row" style="padding-left:24px"><span class="hint" id="cfg-brk-stat"></span></div>
       </div>
 
       <div class="kv" style="grid-template-columns:110px 1fr">
-        <div class="k">每日发信上限</div><div><input id="cfg-limit" type="number" min="1" max="500" style="width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"><span class="hint" style="margin-left:8px">手动+自动+跟进 全部共用这个总闸</span></div>
+        <div class="k">每日发信上限</div><div><input id="cfg-limit" type="number" min="1" style="width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"><span class="hint" style="margin-left:8px">手动+自动+跟进 全部共用这个总闸</span></div>
         <div class="k">公司名</div><div><input id="cfg-company" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
         <div class="k">官网</div><div><input id="cfg-website" placeholder="https://tejoy.com" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
       </div>
@@ -2340,6 +2343,23 @@
       await loadNotifyCfg();          // 飞书那块也一起刷新
     };
     $("#btn-settings").onclick = () => openSettings();
+    document.addEventListener("input", (e) => { if (e.target && e.target.id === "cfg-auto-limit") renderCapacity(); });
+    // ⭐ P0-1 的灵魂：**宁可告诉他做不到，也不能悄悄砍成 N 还让他以为发了 500。**
+    // 今天的教训就是这个：`Math.min(autoRoom,5)` 把 Joe 设的 100/天 砍成了 20/天，
+    // 而他和总工都以为设置生效了。所以这里**只说实话，不设限**。
+    let _capacity = null;
+    function renderCapacity(){
+      const el = $("#cfg-capacity"); if (!el || !_capacity) return;
+      const want = Number($("#cfg-auto-limit").value) || 0;
+      const { perDay, perRound, roundsPerDay } = _capacity;
+      const base = `系统产能：每小时一班 × 每班最多约 ${perRound} 封 ≈ <b>${perDay} 封/天</b>`;
+      if (want > perDay) {
+        el.innerHTML = `⚠️ <span style="color:var(--red,#e5534b)">你填的 <b>${want}</b> 封/天 <b>发不到</b></span> —— ${base}。`
+          + `<br>超出的部分会顺延到之后的班次，<b>不会丢</b>，但当天发不完。`;
+      } else {
+        el.innerHTML = `${base}。你填的 ${want} 封/天 <b>能发到</b> ✓`;
+      }
+    }
     // 自动化区 + 熔断状态。熔断了而 Joe 不知道，比不熔断还糟 —— 所以停了必须显眼说清为什么。
     function renderAutomation(c){
       $("#cfg-auto-approve").checked = c.auto_approve_enabled !== false;
@@ -2347,6 +2367,10 @@
       $("#cfg-auto-limit").value = c.auto_send_daily_limit || 15;
       $("#cfg-auto-min").textContent = c.auto_approve_min || 70;
       $("#cfg-auto-used").textContent = `（今日已自动发 ${c.auto_sent_today || 0} 封）`;
+      // ⭐ P0-1：产能提示。**不拦他**，只在他填的数超过物理产能时当场说清楚。
+      //   这条是这批的灵魂：不做它，我们就只是把"被硬编码的 5 砍"换成"被 wall time 砍"——换个方式骗他。
+      _capacity = c.capacity || null;
+      renderCapacity();
       const b = c.breaker || {};
       // 退订率：样本不足就只报计数、不报率 —— 与数据看板 n<50 的口径同一条原则，别在这儿破例
       $("#cfg-brk-stat").textContent = b.enoughSample
