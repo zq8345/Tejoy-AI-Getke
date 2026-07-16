@@ -8,7 +8,7 @@ import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, un
 import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
 import { findLeadEmail } from "./findemail";
 import { ingestReplies } from "./replies";
-import { categorizeCustomerType } from "./taxonomy";
+import { categorizeCustomerType, classifyKillReason, KILL_REASONS } from "./taxonomy";
 import { larkConfigured, larkSend, digestCard, testCard, inboundCard } from "./notify";
 import { catalogHtml } from "./landing";
 import { handleResendEvent, verifyResendSignature } from "./webhook";
@@ -138,10 +138,19 @@ async function getAutoApproveMin(env: Env): Promise<number> {
   // 不许低于 APPROVE_MIN_SCORE：低了也没用，approveGateReason 那条护栏照样拦，只会造成"设了却不生效"的假象
   return Number.isFinite(v) ? Math.max(APPROVE_MIN_SCORE, Math.min(100, v)) : AUTO_APPROVE_MIN_DEFAULT;
 }
-function approveGateReason(email: string | null, score: number | null): string | null {
+/**
+ * 「待发送」准入的**单一真源**。bulk-status / :id/status / 自动批准 全部走它。
+ *
+ * humanApproved：Joe 在翻牌堆里对**单条** <60 线索亲手按过「手动发这家」。
+ *   · 只豁免**分数线**这一条 —— 邮箱仍然必须有（没邮箱根本发不了，豁免它没有意义）
+ *   · 幂等/压制名单/每日上限/原子取批 全都不在这个函数里，一个也豁免不到
+ *   · "未打分"也不豁免：未打分 ≠ 低分，它多半是官网抓不到（见 service.ts FETCH_FAIL_MAX），
+ *     那种情况该去补网址重新分析，不是硬发一封基于空白信息写出来的信
+ */
+function approveGateReason(email: string | null, score: number | null, humanApproved = false): string | null {
   if (!email || !String(email).trim()) return "缺邮箱，不能批准（先补邮箱）";
   if (score == null) return "未打分，不能批准（先 AI 分析）";
-  if (score < APPROVE_MIN_SCORE) return `${score} 分 < ${APPROVE_MIN_SCORE} 分门槛，不能批准`;
+  if (score < APPROVE_MIN_SCORE && !humanApproved) return `${score} 分 < ${APPROVE_MIN_SCORE} 分门槛，不能批准`;
   return null;
 }
 
@@ -452,6 +461,38 @@ app.get("/api/leads", async (c) => {
 });
 
 // ---- 筛选维度可选值（国家 / 规范客户分类），供前端下拉动态生成 ----
+// ---- 翻牌堆：<60 被机器扔掉的，按"被杀原因"分组给 Joe 复核 ----
+// 为什么值得做这个视图：机器**误杀**一个真客户 = 损失一单、不可见、无兜底。
+// Joe 扫组名就能整组略过（"这 30 家全是攻略站" → 跳过），只在可疑的组里下钻。
+app.get("/api/leads/flip-pile", async (c) => {
+  const rows = (await c.env.DB.prepare(
+    `SELECT l.id, l.company_name, l.website, l.email, l.country, l.channels, l.human_approved,
+            a.match_score, a.customer_type, a.reason
+       FROM leads l JOIN lead_analysis a ON a.lead_id = l.id
+      WHERE l.status IN ('analyzed','pending')
+        AND a.match_score IS NOT NULL AND a.match_score < ${APPROVE_MIN_SCORE}
+      ORDER BY a.match_score DESC, l.id ASC LIMIT 500`
+  ).all()).results as any[];
+
+  const groups: Record<string, any[]> = {};
+  for (const r of rows) {
+    // 分类看 buyer_type 前缀 + reason 正文（老数据没有前缀，见 taxonomy.classifyKillReason 的注释）
+    const key = classifyKillReason(`${r.customer_type || ""} ${r.reason || ""}`);
+    (groups[key] ||= []).push({
+      id: r.id, company_name: r.company_name, website: r.website, email: r.email,
+      country: r.country, channels: r.channels, human_approved: r.human_approved,
+      match_score: r.match_score, customer_type: r.customer_type,
+      // 证据摘要：Joe 要"一行看懂为什么被杀"，长的截断（详情页能看全文）
+      evidence: String(r.reason || "").replace(/^【[^】]*】\s*/, "").slice(0, 120),
+    });
+  }
+  // 组内已按分数降序（SQL 的 ORDER BY 带过来），组间按 KILL_REASONS 的固定顺序 —— 位置稳定，Joe 能形成肌肉记忆
+  const out = KILL_REASONS.filter((g) => groups[g.key]?.length).map((g) => ({
+    key: g.key, label: g.label, hint: g.hint, count: groups[g.key].length, leads: groups[g.key],
+  }));
+  return c.json({ total: rows.length, groups: out });
+});
+
 app.get("/api/leads/facets", async (c) => {
   const countries = await c.env.DB.prepare(
     "SELECT UPPER(country) AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country != '' GROUP BY UPPER(country) ORDER BY n DESC"
@@ -632,15 +673,16 @@ app.post("/api/leads/:id/status", async (c) => {
   const PROTECTED = new Set(["unsubscribed", "blacklisted", "bounced"]);
   const PROTECTED_ALLOWED_TARGETS = new Set(["unsubscribed", "blacklisted", "bounced", "ignored"]);
   const cur = await c.env.DB.prepare(
-    "SELECT l.status, l.email, a.match_score FROM leads l LEFT JOIN lead_analysis a ON a.lead_id = l.id WHERE l.id = ?"
-  ).bind(id).first<{ status: string; email: string; match_score: number | null }>();
+    "SELECT l.status, l.email, l.human_approved, a.match_score FROM leads l LEFT JOIN lead_analysis a ON a.lead_id = l.id WHERE l.id = ?"
+  ).bind(id).first<{ status: string; email: string; human_approved: number; match_score: number | null }>();
   if (!cur) return c.json({ error: "not found" }, 404);
   if (PROTECTED.has(cur.status) && !PROTECTED_ALLOWED_TARGETS.has(status)) {
     return c.json({ error: `「${cur.status}」是合规终态，只能转到 黑名单/退订/退信/已忽略，不能转到「${status}」（防复发绕过）` }, 409);
   }
-  // A1 待发送护栏（服务端强制，与 bulk-status 同一真源）：置 approved 必须 有邮箱 且 已打分≥60
+  // A1 待发送护栏（服务端强制，与 bulk-status 同一真源）：置 approved 必须 有邮箱 且 已打分≥60。
+  // 单条路径认 human_approved（Joe 亲手按过「手动发这家」）→ 只豁免分数线，邮箱仍必须有。
   {
-    const gate = approveGateReason(cur.email, cur.match_score);
+    const gate = approveGateReason(cur.email, cur.match_score, cur.human_approved === 1);
     if (status === "approved" && gate) return c.json({ error: gate }, 409);
   }
   const res = await c.env.DB.prepare(
@@ -652,6 +694,53 @@ app.post("/api/leads/:id/status", async (c) => {
     await addSuppressedEmail(c.env, cur.email, `manual:${status}`);
   }
   return c.json({ ok: true, id, status });
+});
+
+// ---- 翻牌堆 human override：「手动发这家」（Joe 亲手对单条 <60 线索按下）----
+// ⭐ 这是**唯一能让 <60 的信发出去的口子**。设计约束（对应的实测在 commit message 里）：
+//   · 只接受**单条 id**（路径参数）—— 没有 ids[] 数组、没有批量版本、没有任何自动路径调它
+//   · 只豁免**分数线**：邮箱仍必须有（approveGateReason 里判），M3 终态照样拦
+//   · 幂等/压制名单/每日上限/原子取批 一个都不豁免（那些在 sendApprovedBatch / deliverEmail 里，
+//     这个端点根本碰不到它们）
+//   · 不发信，只置 approved —— 发送仍走 sendApprovedBatch 那条唯一的发送路径
+// 存在的理由：机器误杀一个真客户 = 损失一单、不可见、无兜底。Joe 在翻牌堆里认出来的，得有路发出去。
+app.post("/api/leads/:id/human-approve", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
+  const cur = await c.env.DB.prepare(
+    "SELECT l.status, l.email, a.match_score FROM leads l LEFT JOIN lead_analysis a ON a.lead_id = l.id WHERE l.id = ?"
+  ).bind(id).first<{ status: string; email: string; match_score: number | null }>();
+  if (!cur) return c.json({ error: "not found" }, 404);
+  // M3 合规终态照拦：human override 只越过分数线，不越过合规
+  const PROTECTED = new Set(["unsubscribed", "blacklisted", "bounced"]);
+  if (PROTECTED.has(cur.status)) {
+    return c.json({ error: `「${cur.status}」是合规终态，不能手动发（这条线是合规红线，不是分数线）` }, 409);
+  }
+  // 走同一条护栏，humanApproved=true 只让它跳过分数线那一项；缺邮箱/未打分照样被拦
+  const gate = approveGateReason(cur.email, cur.match_score, true);
+  if (gate) return c.json({ error: gate }, 409);
+  await c.env.DB.prepare(
+    "UPDATE leads SET human_approved=1, status='approved', updated_at=datetime('now') WHERE id=?"
+  ).bind(id).run();
+  return c.json({ ok: true, id, score: cur.match_score, note: "已加入待发送（人工放行）。发送仍受每日上限/压制名单/幂等约束。" });
+});
+
+// ---- 翻牌堆 →「转工作台」：<60 但有社媒渠道的，进 D 的手动触达队列 ----
+// 工作台里没有任何自动发送，全是 Joe 的手 → 这个标记不像 human_approved 那样敏感，
+// 但同样只接受单条 id、只由这个端点写。
+app.post("/api/leads/:id/to-bench", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
+  const cur = await c.env.DB.prepare("SELECT status, channels FROM leads WHERE id=?").bind(id)
+    .first<{ status: string; channels: string | null }>();
+  if (!cur) return c.json({ error: "not found" }, 404);
+  if (["unsubscribed", "blacklisted", "bounced"].includes(cur.status)) {
+    return c.json({ error: `「${cur.status}」是合规终态，不能再联系（换渠道也不行）` }, 409);
+  }
+  let n = 0; try { n = Object.keys(JSON.parse(cur.channels || "{}")).length; } catch { /* 坏 JSON 当没渠道 */ }
+  if (!n) return c.json({ error: "这家没有任何社媒/电话渠道，碰不到（工作台也没辙）" }, 409);
+  await c.env.DB.prepare("UPDATE leads SET bench_queued=1, updated_at=datetime('now') WHERE id=?").bind(id).run();
+  return c.json({ ok: true, id });
 });
 
 // ---- 快赢③：设置线索"下一步动作 + 日期"（轻CRM）----

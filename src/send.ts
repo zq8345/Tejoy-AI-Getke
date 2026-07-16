@@ -347,10 +347,18 @@ export async function sendApprovedBatch(env: Env, requested: number, ids?: numbe
 
   // S3 发送分数硬下限：只取 match_score >= 60 的（NULL/<60 即使被误批准也永不发，兜底防"一点群发就发垃圾"）
   // A2：传了 ids 就在同一条 WHERE 上再加 id IN (...) —— 门槛/上限/排序全部照旧，只是范围收窄到选中项
+  //
+  // ⭐ `OR l.human_approved=1`：翻牌堆里 Joe **亲手对单条**按过「手动发这家」的。
+  //   这不是把闸放松 —— human_approved 只能由 /api/leads/:id/human-approve 单条端点写入
+  //   （无批量版本、无自动路径），而那个端点自己也要过 approveGateReason（邮箱必须有）+ M3 终态。
+  //   到了这里，其余的闸一个不少：status='approved' 仍要满足、每日上限（take）已经在上面算过、
+  //   下面还有原子取批、deliverEmail 的幂等 + 压制名单。
+  //   ⚠️ 注意 match_score NULL 的仍然发不出去：`a.match_score >= 60` 和 `human_approved=1` 是 OR，
+  //      但未打分的线索连 human-approve 端点都过不了（approveGateReason 的"未打分"那条不豁免）。
   const idList = Array.isArray(ids) ? ids.filter((n) => Number.isFinite(n)) : [];
   const base =
     `SELECT l.*, a.match_score FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
-     WHERE l.status='approved' AND a.match_score >= 60`;
+     WHERE l.status='approved' AND (a.match_score >= 60 OR l.human_approved = 1)`;
   const tail = ` ORDER BY a.match_score DESC, l.id ASC LIMIT ?`;
   const rows = idList.length
     ? await env.DB.prepare(`${base} AND l.id IN (${idList.map(() => "?").join(",")})${tail}`).bind(...idList, take).all()

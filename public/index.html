@@ -80,6 +80,24 @@
     .st-new { background:#33383f; color:#cfd6e2; }
     /* 待分析：机器还没处理完，人不用做什么 → 比「待审核」(等你审) 更暗、更安静，别抢注意力 */
     .st-todo { background:#2b2f36; color:#8c94a3; }
+    /* 批⑤B 翻牌堆：组名要能一眼扫，证据摘要要能一行看懂 */
+    .fp-intro { font-size:13px; color:var(--text); margin:8px 0 12px; line-height:1.7; }
+    .fp-intro .hint { display:block; margin-top:2px; }
+    .fp-group { border:1px solid var(--border); border-radius:8px; margin-bottom:8px; overflow:hidden; }
+    .fp-head { display:flex; align-items:center; gap:9px; padding:10px 12px; cursor:pointer; background:var(--panel2,#22262c); }
+    .fp-head:hover { background:#282d34; }
+    .fp-caret { width:10px; color:var(--muted); flex-shrink:0; }
+    .fp-label { font-weight:600; font-size:13px; flex-shrink:0; }
+    .fp-count { font-size:12px; color:var(--muted); flex-shrink:0; }
+    .fp-hint { font-size:12px; color:var(--muted); margin-left:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .fp-body { border-top:1px solid var(--border); }
+    .fp-row { display:flex; align-items:flex-start; gap:12px; padding:9px 12px; border-bottom:1px solid var(--border); }
+    .fp-row:last-child { border-bottom:none; }
+    .fp-main { flex:1; min-width:0; }
+    .fp-co { display:flex; align-items:center; gap:7px; flex-wrap:wrap; font-size:13px; }
+    .fp-ev { font-size:12px; color:var(--muted); margin-top:3px; line-height:1.5; }
+    .fp-acts { display:flex; gap:6px; align-items:center; flex-shrink:0; }
+    .mini { padding:3px 9px; font-size:12px; }
     /* 熔断横幅：自动发送被停了而 Joe 不知道，比不停还糟 → 这里要抢注意力 */
     .brk-banner { background:#3a1f1e; border:1px solid #7a3b36; color:#ffb3ab; border-radius:8px;
       padding:10px 12px; margin:10px 0; font-size:13px; line-height:1.6; }
@@ -456,6 +474,9 @@
       <!-- 批③C 分格工具栏：每格 = 这一格的出口动作（靠什么排空），由 renderGroupTools() 按 current 渲染。
            全部页/已成交 无工具栏。选中类动作未选时禁用；全量类动作始终可用。 -->
       <div id="group-tools" class="bulk-bar" style="display:none"></div>
+      <!-- 批⑤B 翻牌堆：在「待审批」格选「<60 翻牌堆」时，**顶掉表格**换成按"被杀原因"分组的复核视图。
+           不造新房间（走既有的 待审批+筛选 那条路），但换一种读法：Joe 扫组名整组略过，只在杀错的地方下钻。 -->
+      <div id="flip-pile" style="display:none"></div>
       <table>
         <thead><tr><th><input type="checkbox" id="sel-all" title="全选当前筛选" onclick="event.stopPropagation();toggleSelAll(this.checked)"> 公司</th><th>评分</th><th>阶段</th><th>邮箱</th><th>分类</th><th>国家</th><th class="chcol">LinkedIn</th><th class="chcol">WhatsApp</th><th class="chcol">Facebook</th><th class="chcol">Instagram</th><th class="chcol">电话</th><th>录入时间</th></tr></thead>
         <tbody id="rows"></tbody>
@@ -1107,7 +1128,90 @@
       sSel.value = scur;
     }
 
+    // ⭐ 批⑤B 翻牌堆：「待审批」格 + 「<60 翻牌堆」筛选 → 换成分组复核视图。
+    //   为什么值得单独一种读法：机器**误杀**一个真客户 = 损失一单、不可见、无兜底
+    //   （cayelectronics/12volt/flarespace/seasucker 都被埋过）。平铺 95 行让人放弃；
+    //   按"被杀原因"分组，Joe 扫组名就能整组略过，把注意力放在可疑的组里。
+    const isFlipPileView = () => current === 'review' && $("#f-score").value === `0-${SCORE_LINE}`;
+
+    async function renderFlipPile() {
+      const box = $("#flip-pile"), tbl = document.querySelector('.main table');
+      box.style.display = ""; if (tbl) tbl.style.display = "none";
+      $("#empty").style.display = "none";
+      box.innerHTML = `<p class="hint">加载中…</p>`;
+      const d = await fetch("/api/leads/flip-pile").then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (d.error) { box.innerHTML = `<p class="hint">加载失败：${esc(d.error)}</p>`; return; }
+      if (!d.total) { box.innerHTML = `<div class="empty">翻牌堆是空的 —— 机器这轮没扔掉任何东西。</div>`; return; }
+      box.innerHTML =
+        `<div class="fp-intro">机器扔掉了 <b>${d.total}</b> 家。按"被杀原因"分组 —— <b>扫组名整组略过，只在你觉得杀错的地方点开</b>。
+          <span class="hint">机器误发一封信成本低、有熔断兜底；误杀一个真客户损失一单、不可见 —— 所以这堆值得你扫一眼。</span></div>` +
+        d.groups.map(g => `
+          <div class="fp-group">
+            <div class="fp-head" onclick="toggleFlipGroup('${g.key}')">
+              <span class="fp-caret" id="fpc-${g.key}">▸</span>
+              <span class="fp-label">${g.label}</span>
+              <span class="fp-count">${g.count} 家</span>
+              <span class="fp-hint">${g.hint}</span>
+            </div>
+            <div class="fp-body" id="fpb-${g.key}" style="display:none">
+              ${g.leads.map(l => `
+                <div class="fp-row">
+                  <div class="fp-main">
+                    <div class="fp-co">${scoreBadge(l.match_score)} <b>${esc(l.company_name)||"(未命名)"}</b>
+                      ${l.website?`<a class="wsite" href="${esc(l.website)}" target="_blank" onclick="event.stopPropagation()">${esc(hostOf(l.website))}</a>`:""}
+                      ${l.human_approved?`<span class="pill" style="background:var(--green);color:#fff">已人工放行</span>`:""}
+                    </div>
+                    <div class="fp-ev">${esc(l.evidence)||"<span class='muted'>（无理由）</span>"}</div>
+                  </div>
+                  <div class="fp-acts">
+                    ${l.email
+                      ? `<button class="btn-green mini" ${l.human_approved?'disabled':''} onclick="event.stopPropagation();flipSend(${l.id},'${esc(l.company_name||'').replace(/'/g,"\\'")}',${l.match_score})">✉️ 手动发这家</button>`
+                      : (channelCount(l.channels)
+                          ? `<button class="btn-amber mini" onclick="event.stopPropagation();flipToBench(${l.id})">💬 转工作台</button>`
+                          : `<span class="hint">无邮箱无渠道，碰不到</span>`)}
+                    <button class="btn-ghost mini" onclick="event.stopPropagation();flipIgnore(${l.id})">忽略</button>
+                    <button class="btn-ghost mini" onclick="event.stopPropagation();openDetail(${l.id})">详情</button>
+                  </div>
+                </div>`).join("")}
+            </div>
+          </div>`).join("");
+    }
+    window.toggleFlipGroup = (k) => {
+      const b = $("#fpb-"+k), c = $("#fpc-"+k); if (!b) return;
+      const open = b.style.display === "none";
+      b.style.display = open ? "" : "none"; if (c) c.textContent = open ? "▾" : "▸";
+    };
+    const channelCount = (j) => { try { return Object.keys(JSON.parse(j||"{}")).length; } catch { return 0; } };
+    // 「手动发这家」= human override：**唯一**能让 <60 发出去的路，且只对单条、只由 Joe 亲手点。
+    window.flipSend = async (id, name, score) => {
+      if (!(await uiConfirm({ title:"手动发这家？",
+        body:`**${name}**（${score} 分，低于 ${SCORE_LINE} 分线）\n\n你判断机器杀错了 → 它会进「待发送」，由**下一轮自动发送**把信发出去。\n`
+          + `发送仍然受 每日上限 / 压制名单 / 幂等（不会重发）约束，这些一个都不豁免。\n\n`
+          + `⚠️ 这个口子**只对你亲手点的这一条**开 —— 没有批量版本，机器自己永远碰不到 <${SCORE_LINE} 分的线索。`,
+        confirmText:"放行，发它" }))) return;
+      const r = await fetch(`/api/leads/${id}/human-approve`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (r.error) { toolMsg("失败: "+esc(r.error)); return; }
+      toolMsg(`✅ ${name} 已人工放行，进待发送`);
+      renderFlipPile(); loadStats();
+    };
+    window.flipToBench = async (id) => {
+      const r = await fetch(`/api/leads/${id}/to-bench`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (r.error) { toolMsg("失败: "+esc(r.error)); return; }
+      toolMsg("✅ 已加入触达工作台队列（用社媒/电话手动碰）");
+      renderFlipPile(); loadStats();
+    };
+    window.flipIgnore = async (id) => {
+      const r = await fetch(`/api/leads/${id}/status`, { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ status:"ignored" }) }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (r.error) { toolMsg("失败: "+esc(r.error)); return; }
+      renderFlipPile(); loadStats();
+    };
+
     async function loadList() {
+      // 翻牌堆视图接管（同一格、同一条筛选，换一种读法）
+      if (isFlipPileView()) { await renderFlipPile(); return; }
+      const box = $("#flip-pile"), tbl = document.querySelector('.main table');
+      if (box) box.style.display = "none"; if (tbl) tbl.style.display = "";
       const { leads } = await fetch(`/api/leads?${filterQuery()}`).then(r=>r.json());
       $("#empty").style.display = leads.length ? "none" : "block";
       _loadedIds = leads.map(l => String(l.id));
