@@ -90,7 +90,7 @@ function buildText(body: string, unsubUrl: string, company: string, address: str
 }
 
 // 今日已发送数量（UTC 日期）
-async function sentToday(env: Env): Promise<number> {
+export async function sentToday(env: Env): Promise<number> {
   const r = await env.DB.prepare(
     "SELECT COUNT(*) AS n FROM emails WHERE status='sent' AND date(sent_at)=date('now')"
   ).first<{ n: number }>();

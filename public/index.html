@@ -448,7 +448,7 @@
   <header>
     <!-- 批③顶栏收口：顶栏 = logo + 搜索，右侧空。
          所有动作都回到它所属的阶段页；设置移到左栏底部。
-         群发→待发送页「全部发送」；回复箱→已回复页；批量分析→待分析页；批量找邮箱/Hunter→待审批页；导入CSV→找客户页。 -->
+         群发→待发送页「发送选中」（批⑩B：全部发送已删，要发全部点表头全选框）；回复箱→已回复页；批量分析→待分析页；批量找邮箱/Hunter→待审批页；导入CSV→找客户页。 -->
     <div class="hdr-left"><img src="https://tejoy.com/static/tejoy-logo-white.png" alt="TEJOY" title="回待办事项首页" onclick="openToday()" style="height:22px;width:auto;display:block"></div>
     <div class="hdr-right-zone">
       <input type="search" id="q" placeholder="搜索公司 / 邮箱 / 域名…" />
@@ -981,10 +981,19 @@
     let sortMode = "";
     // B1 多选状态（存字符串 id）；_loadedIds = 当前已加载行 id，用于"全选当前"
     const selectedIds = new Set(); let _loadedIds = [];
+    let _loadedLeads = [];   // 批⑩B：当前列表的线索对象 —— 发送确认弹窗要按邮箱有无分组，光有 id 算不出来
     window.toggleSel = (id, checked) => { const s=String(id); if(checked) selectedIds.add(s); else selectedIds.delete(s); refreshBulkBar(); syncSelAll(); };
-    window.toggleSelAll = (checked) => { _loadedIds.forEach(id => { if(checked) selectedIds.add(id); else selectedIds.delete(id); }); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=checked); refreshBulkBar(); };
-    window.clearSel = () => { selectedIds.clear(); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=false); const sa=$("#sel-all"); if(sa)sa.checked=false; refreshBulkBar(); };
-    function syncSelAll(){ const sa=$("#sel-all"); if(!sa) return; sa.checked = _loadedIds.length>0 && _loadedIds.every(id=>selectedIds.has(id)); }
+    window.toggleSelAll = (checked) => { _loadedIds.forEach(id => { if(checked) selectedIds.add(id); else selectedIds.delete(id); }); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=checked); refreshBulkBar(); syncSelAll(); };
+    window.clearSel = () => { selectedIds.clear(); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=false); const sa=$("#sel-all"); if(sa){sa.checked=false; sa.indeterminate=false;} refreshBulkBar(); };
+    // 批⑩C：删了「取消选择」之后，表头这个框就是**唯一**的清空入口 → 它的状态必须读得准。
+    // 半选态用 indeterminate 表达（选了一部分 ≠ 一条没选）。原生 checkbox 的行为正好是我们要的：
+    // 半选/未选时点一下 → checked=true → 全选；全选时点一下 → checked=false → 全不选。
+    function syncSelAll(){
+      const sa=$("#sel-all"); if(!sa) return;
+      const picked = _loadedIds.filter(id=>selectedIds.has(id)).length;
+      sa.checked = _loadedIds.length>0 && picked===_loadedIds.length;
+      sa.indeterminate = picked>0 && picked<_loadedIds.length;
+    }
     // ===== 批③C 分格工具栏：每格 = 这一格的出口动作 =====
     // sel:true = 选中类（未选中时禁用，标题带条数）；否则 = 全量类（对当前格全体，始终可用）
     const GROUP_TOOLS = {
@@ -1000,7 +1009,9 @@
         { t:"忽略选中", cls:"btn-amber", sel:true, fn:"toolStatusSel('ignored','忽略')" },
       ],
       ready: [
-        { t:"全部发送（受每日上限）", cls:"btn-green", fn:"toolSendAll()" },
+        // 批⑩B：「全部发送」已删 —— 要发全部就点表头全选框（跟"取消选择"是同一个手势）。
+        // ⚠️ 按钮名必须保留「选中」二字，不能只叫「发送」：这是**不可撤销**动作，
+        //    名字必须说清对谁生效。"批准≠发送"那次事故就是名字不精准造成的。
         { t:"发送选中", cls:"btn-green", sel:true, fn:"toolSendSel()" },
         { t:"退回待审批", cls:"", sel:true, fn:"toolStatusSel('analyzed','退回待审批')" },
       ],
@@ -1035,7 +1046,8 @@
       bar.style.display = "flex";
       bar.innerHTML = `<span>已选 <b id="bulk-n">${n}</b> 条</span>`
         + defs.map(d=>`<button class="${d.cls} mini"${d.sel&&!n?" disabled title='先勾选线索'":""} onclick="${d.fn}">${esc(d.t)}${d.sel&&n?`（${n}）`:""}</button>`).join("")
-        + (n?`<button class="mini" onclick="clearSel()">取消选择</button>`:"")
+        // 批⑩C：「取消选择」已删（六个格子一起没了）—— 表头那个框本来就是全选/全不选的
+        // toggle，这个按钮纯冗余。删它的前提是表头框的状态得读得准，见 syncSelAll 的 indeterminate。
         + `<span class="hint" id="bulk-msg"></span>`;
     }
     const refreshBulkBar = renderGroupTools;   // 兼容原有调用点
@@ -1116,11 +1128,13 @@
       toolMsg(r.error?("失败: "+esc(r.error)):`✅ 已忽略 ${r.updated} 条${skipSummary(r.skipped)?`，${esc(skipSummary(r.skipped).replace(/^\n/,""))}`:""}`);
       afterMutate();
     };
-    // 待发送：全部发送 / 发送选中（都走 /api/send/batch，≥60门槛+每日上限+幂等+压制不绕）
+    // 待发送/待联系：唯一入口「发送选中」（走 /api/send/batch，≥60门槛+每日上限+幂等+压制一个不绕）
     async function doSend(ids, title, body){
       const cfg = await fetch("/api/settings/sending").then(r=>r.json()).catch(()=>({}));
       const cap = cfg.daily_send_limit || 50;
-      if(!(await uiConfirm({ title, body: body(cap), confirmText:"确认发送", danger:false }))) return;
+      // 批⑩B：剩余额度要真算出来给 Joe 看。sent_today 由 /api/settings/sending 带出（复用端点，没新开）。
+      const left = Math.max(0, cap - (cfg.sent_today || 0));
+      if(!(await uiConfirm({ title, body: body(cap, left), confirmText:"确认发送", danger:false }))) return;
       toolMsg("发送中…（发出不可撤）");
       const payload = ids ? { ids, limit: cap } : { limit: cap };
       const r=await fetch("/api/send/batch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)}).then(r=>r.json()).catch(e=>({error:String(e)}));
@@ -1131,11 +1145,20 @@
       await uiConfirm({ title:`发送完成：${r.sent} 封`, body:`今日已发 ${r.sentToday}/${r.dailyLimit}。${why||""}${r.capReached?"\n⚠️ 已触及每日上限，其余明天再发。":""}`, confirmText:"知道了", cancelText:"关闭" });
       afterMutate();
     }
-    window.toolSendAll = () => doSend(null, "全部发送（受每日上限）",
-      cap => `将发送**全部待发送**线索（高分优先）。\n\n· 受每日上限 **${cap}** 封约束，超出的明天继续\n· <60分／退订／黑名单／已发过的 会自动跳过\n· 发出不可撤（发件 hello@tejoy.net）`);
+    // 批⑩B：唯一的发送按钮。确认弹窗必须把"这一下到底会发几封"算给 Joe 看 ——
+    // 批⑨ 之后「待联系」里会混着只有社媒的线索，"选了 30 条"和"会发 30 封"不再是一回事。
     window.toolSendSel = () => { const ids=[...selectedIds].map(Number); if(!ids.length) return;
-      doSend(ids, `发送选中 ${ids.length} 条`,
-        cap => `将只发送**选中的 ${ids.length} 条**。\n\n· 受每日上限 **${cap}** 封约束\n· 其中 <60分／缺邮箱／退订／黑名单／已发过的 会自动跳过\n· 发出不可撤（发件 hello@tejoy.net）`); };
+      const picked = _loadedLeads.filter(l => selectedIds.has(String(l.id)));
+      const withEmail = picked.filter(l => l.email && String(l.email).trim());
+      const noEmail   = picked.filter(l => !(l.email && String(l.email).trim()));
+      doSend(ids, `发送选中 ${ids.length} 条`, (cap, left) => {
+        const willSend = Math.min(withEmail.length, left);
+        return `选中 **${ids.length}** 条，其中：\n\n`
+          + `· **${withEmail.length} 条有邮箱** → 会发邮件\n`
+          + (noEmail.length ? `· **${noEmail.length} 条只有社媒/无邮箱** → **发不了**，得你点进详情页手动碰\n` : "")
+          + `· 今日上限 ${cap} 封，**还剩 ${left} 封**${withEmail.length>left?`　→ ⚠️ 这次最多发 ${willSend} 封，其余明天继续`:""}\n\n`
+          + `其中 <60分／退订／黑名单／已发过的 还会再跳过一些。\n**发出不可撤**（发件 hello@tejoy.net）`;
+      }); };
     // 已发送/已查看：跟进选中（engaged 的自动用「趁热」暖变体，共用 /api/followup/run）
     window.toolFollowupSel = async (warm) => {
       const ids=[...selectedIds].map(Number); if(!ids.length) return;
@@ -1285,6 +1308,7 @@
       const { leads } = await fetch(`/api/leads?${filterQuery()}`).then(r=>r.json());
       $("#empty").style.display = leads.length ? "none" : "block";
       _loadedIds = leads.map(l => String(l.id));
+      _loadedLeads = leads;
       // 小修：列表每次 reload 后把已选与当前结果集求交集——去掉不在当前筛选/分组可见集里的 id，
       // 让"已选N条"与批量操作永远=当前可见的选中项（无分页，全量加载，交集剪枝安全）。
       { const visible = new Set(_loadedIds); for (const id of [...selectedIds]) if (!visible.has(id)) selectedIds.delete(id); }
@@ -1937,7 +1961,7 @@
     };
 
     // 批③顶栏收口：#btn-send(群发开发信) 已删 —— 它无视当前页、永远发全部 approved，
-    // 正是"筛出35条却发全部"事故的元凶。功能归「待发送」格的「全部发送/发送选中」（后端 sendApprovedBatch 原样复用）。
+    // 正是"筛出35条却发全部"事故的元凶。功能归「待发送」格的「发送选中」（后端 sendApprovedBatch 原样复用）。
 
     // 单条找邮箱（useHunter=false 免费抓官网；true 走 Hunter 花1积分）
     window.findMail = async (id, useHunter=false) => {
@@ -2577,7 +2601,7 @@
     }
     window.dashAction = (a) => {
       // 批③：顶栏按钮已删 → 一律跳到"动作所属的那一格"，让用户在该格里用它的出口动作（不做隔空动作）
-      if (a==='send'){ gotoGroup('ready'); }            // 群发 → 待发送格（那里有「全部发送/发送选中」）
+      if (a==='send'){ gotoGroup('ready'); }            // 群发 → 待发送格（那里有「发送选中」）
       else if (a==='replies'){ gotoGroup('replied'); }  // 回复箱 → 已回复格
       else if (a==='findmail'){ gotoGroup('review'); }  // 补邮箱 → 待审批格（那里有「缺邮箱→批量补邮箱」）
       else if (a && a.indexOf('group:')===0){ gotoGroup(a.slice(6)); }
