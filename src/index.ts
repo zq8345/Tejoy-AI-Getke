@@ -5,7 +5,7 @@ import { analyzeLead, getProfile, DEFAULT_PROFILE } from "./service";
 import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese } from "./openrouter";
 import { scrapeSite } from "./scrape";
 import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed } from "./send";
-import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest } from "./discover";
+import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
 import { findLeadEmail } from "./findemail";
 import { ingestReplies } from "./replies";
 import { categorizeCustomerType } from "./taxonomy";
@@ -1023,9 +1023,7 @@ app.post("/api/discover/nmea", async (c) => {
 // rvwithtito RV 离网/太阳能安装商名单（网页外链采集，黑名单第三方域）
 app.post("/api/discover/rvwithtito", async (c) => {
   try {
-    const out = await runLinkHarvest(c.env, "https://rvwithtito.com/rv-solar-installers/", "rvwithtito",
-      ["rvwithtito", "google", "facebook", "instagram", "surecart", "mailerlite", "youtube", "twitter", "amazon", "wp.com", "gravatar", "w.org",
-       "gmpg.org", "w3.org", "schema.org", "googleapis", "gstatic", "jquery", "bootstrapcdn", "cloudflare", "wordpress.org"]);   // 滤 WP <head> 样板域
+    const out = await runLinkHarvest(c.env, RVWITHTITO_URL, "rvwithtito", RVWITHTITO_BLACKLIST);   // URL+黑名单单一真源，与 cron 自动刷新共用
     return c.json(out);
   } catch (e: any) {
     return c.json({ error: e.message || String(e) }, 500);
@@ -1060,12 +1058,18 @@ app.get("/api/settings/search", async (c) => {
     discoveryEnabled: (await getSetting(c.env, "discovery_enabled", "0")) === "1",   // #S1 后台每6h自动搜索开关（默认关）
     serper: await getSerperUsage(c.env),   // P0-c 今日 Serper 用量 + 预算
     backlog: await getBacklog(c.env),      // 批④：积压刹车条 —— 瓶颈不是线索不够，是管道里堵着
+    // 队列⑦ 免费目录源每周自动刷新（零 Serper，默认开）
+    dirAutoRefresh: (await getSetting(c.env, "directory_autorefresh_enabled", "1")) === "1",
+    dirLastRefresh: await getSetting(c.env, "directory_last_refresh", ""),
   });
 });
 app.post("/api/settings/search", async (c) => {
-  const b = await c.req.json<{ countries?: string[]; countryList?: string[]; activeKeywords?: string[] | null; perKeyword?: number; discoveryEnabled?: boolean; serperBudget?: number }>().catch(() => ({}));
+  const b = await c.req.json<{ countries?: string[]; countryList?: string[]; activeKeywords?: string[] | null; perKeyword?: number; discoveryEnabled?: boolean; serperBudget?: number; dirAutoRefresh?: boolean }>().catch(() => ({}));
   if (typeof b.discoveryEnabled === "boolean") {
     await setSetting(c.env, "discovery_enabled", b.discoveryEnabled ? "1" : "0");   // #S1 Joe 后台开关
+  }
+  if (typeof b.dirAutoRefresh === "boolean") {
+    await setSetting(c.env, "directory_autorefresh_enabled", b.dirAutoRefresh ? "1" : "0");   // 队列⑦ 每周自动刷新目录（零 Serper，默认开）
   }
   if (b.serperBudget != null) {
     const bn = Number(b.serperBudget);   // 允许 0（完全暂停）；非法值回落 200
@@ -1339,6 +1343,13 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
       inserted = d.inserted;
     } else { console.log("discovery skipped: discovery_enabled=0"); }
   } catch (e) { console.error("discover:", e); }
+  // 1.5) 队列⑦ 免费目录源每周自动刷新（NMEA + rvwithtito）——**零 Serper**，与上面的付费搜索开关无关。
+  //      内部自判 >7 天才真跑、遵守 Crawl-delay 10 与礼貌 UA；抓到的新公司走同一条去重+分析管道（下面第 2 步会打分）。
+  try {
+    const dr = await runDirectoryRefresh(env);
+    if (dr.ran) { inserted += dr.inserted; console.log(`directory refresh: +${dr.inserted}`, dr.detail); }
+    else console.log("directory refresh skipped:", dr.reason);
+  } catch (e) { console.error("dir-refresh:", e); }
   // 2) 分析未处理的新线索：循环分析到无 new 或达安全上限（Free 子请求预算保守，逐条 try/catch）。
   //    成功→status 转 analyzed→下批取到新的；本批全失败(多为持久问题:模型/网络)→停，别空转浪费子请求。
   const CRON_ANALYZE_MAX = 12; // 单轮最多分析条数（~8-12 安全区，别在一次 Cron 抽干 100+）

@@ -475,6 +475,10 @@
             <button id="fc-rvtito">🚐 抓取 rvwithtito RV 安装商</button>
             <span class="hint" id="fc-free-msg"></span>
           </div>
+          <label style="display:flex;align-items:center;gap:7px;margin-top:11px;cursor:pointer;font-size:13px">
+            <input type="checkbox" id="fc-dir-auto"> 每周自动刷新目录
+            <span class="hint" id="fc-dir-last">（零 Serper；后台每 6h 检查一次，距上次 >7 天才真跑）</span>
+          </label>
           <div class="prog-log" id="fc-free-log" style="margin-top:8px;display:none"></div>
           <div id="fc-free-result" style="margin-top:8px"></div>
         </div>
@@ -1685,6 +1689,18 @@
       _fcKwActive = Array.isArray(cfg.activeKeywords) ? cfg.activeKeywords : null;
       { const au=$("#dp-auto"); if(au) au.checked = !!cfg.discoveryEnabled; }   // #S1 后台自动搜索开关回显
       renderBacklog(cfg.backlog);   // 批④ 积压刹车条
+      // 队列⑦ 每周自动刷新目录（零 Serper，默认开）——勾选即存，不必等「保存配置」
+      { const da=$("#fc-dir-auto"); if(da){
+          da.checked = cfg.dirAutoRefresh !== false;
+          const lastEl=$("#fc-dir-last");
+          if(lastEl) lastEl.textContent = cfg.dirLastRefresh
+            ? `（零 Serper；上次刷新 ${String(cfg.dirLastRefresh).slice(0,10)}，距上次 >7 天才真跑）`
+            : `（零 Serper；还没自动刷新过，开着的话后台会跑第一次）`;
+          da.onchange = async () => {
+            await fetch("/api/settings/search",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({dirAutoRefresh:da.checked})});
+            const m=$("#fc-free-msg"); if(m){ m.textContent = da.checked?"✅ 已开启每周自动刷新":"已关闭每周自动刷新"; setTimeout(()=>{ if(m) m.textContent=""; },2500); }
+          };
+      } }
       { const n=$("#fc-nmea"); if(n) n.onclick=runNmeaHarvest; const rv=$("#fc-rvtito"); if(rv) rv.onclick=runRvHarvest; }   // 批B 免费目录源按钮
       if (cfg.serper) { const u=$("#fc-serper-used"); if(u) u.textContent = cfg.serper.usedToday; const b=$("#fc-serper-budget"); if(b) b.value = cfg.serper.budget; }   // P0-c Serper 用量/预算回显
       { const sb=$("#fc-serper-save"); if(sb) sb.onclick = async () => { const v=Number($("#fc-serper-budget").value)||200; await fetch("/api/settings/search",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({serperBudget:v})}); $("#dp-msg").textContent="Serper 预算已保存"; }; }
