@@ -743,6 +743,55 @@ app.post("/api/leads/:id/to-bench", async (c) => {
   return c.json({ ok: true, id });
 });
 
+// ---- 批⑥C「他回了」：任何渠道客户回话了 → 置 replied + 写时间线 ----
+//
+// ⭐ 命名与归属遵循 Joe 定的原则："**邮箱和社媒都只是手段**……哪些邮箱发过邮件，就做一个标识，
+//    而不是把邮箱和社媒当成两套独立的系统。"
+//    所以这是 `/api/leads/:id/channel-reply`（线索身上的一个动作），**不是** `/api/bench/*`
+//    —— 工作台不是独立系统，渠道只是标识。
+//
+// 为什么需要它：邮件回复能靠 IMAP 自动收；**WhatsApp/LinkedIn/电话的回复机器看不见**。
+// Joe 在手机上收到回复，得有个地方一键告诉系统 —— 否则这条线索会一直躺在"等回复"里，
+// 跟进逻辑还会继续追一个已经在聊的人。
+const CHANNEL_LABELS: Record<string, string> = {
+  whatsapp: "WhatsApp", linkedin: "LinkedIn", facebook: "Facebook",
+  instagram: "Instagram", telegram: "Telegram", phone: "电话", email: "邮件", other: "其它渠道",
+};
+app.post("/api/leads/:id/channel-reply", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
+  const b = await c.req.json<{ channel?: string; note?: string }>().catch(() => ({}));
+  const key = String(b.channel || "other").trim().toLowerCase();
+  const label = CHANNEL_LABELS[key] || CHANNEL_LABELS.other;
+  const note = String(b.note || "").trim().slice(0, 500);
+
+  const cur = await c.env.DB.prepare("SELECT status FROM leads WHERE id=?").bind(id).first<{ status: string }>();
+  if (!cur) return c.json({ error: "not found" }, 404);
+  // M3 合规终态照拦：退订/黑名单/退信的人"回话了"也不能把他拉回联系流程 —— 那是合规红线
+  if (["unsubscribed", "blacklisted", "bounced"].includes(cur.status)) {
+    return c.json({ error: `「${cur.status}」是合规终态，不能改成已回复` }, 409);
+  }
+
+  await c.env.DB.prepare("UPDATE leads SET status='replied', updated_at=datetime('now') WHERE id=?").bind(id).run();
+  // 落一条 replies 记录 → 时间线自动显示（timeline 端点就是从 replies 读的），
+  // 且收件箱/已回复页的口径能认出它 —— **渠道回复跟邮件回复一样是"有人回你了"**。
+  // ⚠️ 列名是 content 不是 body（schema.sql 里 replies 的真实定义，上批踩过）。
+  await c.env.DB.prepare(
+    `INSERT INTO replies (lead_id, from_email, subject, content, category, summary, received_at)
+     VALUES (?, ?, ?, ?, 'interested', ?, datetime('now'))`
+  ).bind(id, `(${label})`, `${label}回复`, note || `（在 ${label} 上回复了，由人工标记）`,
+         note ? `${label}：${note.slice(0, 60)}` : `${label}上回复了`).run();
+  // ⚠️ **不写 bench_channel / bench_contacted_at**（第一版我写了，实测证明是错的）：
+  //   · 语义反了：那两个字段的意思是"**我们**在哪个渠道碰过他、什么时候"（我们发出去的），
+  //     而「他回了」是他碰我们（进来的）。写进去会自相矛盾 —— 实测撞到过：
+  //     时间线说"LinkedIn上回复了"、字段却是 whatsapp（我用 COALESCE 保了首值，换渠道再回就对不上）。
+  //   · 也没必要：回复渠道已经准确记在这条 replies 里（时间线读的就是它）；
+  //     而"别给正在聊的人发冷邮件"这件事 **status='replied' 本身就挡死了** ——
+  //     自动批准只取 analyzed、发送只取 approved、重扫不碰 replied。
+  //   真正的"每个渠道碰过/没碰过"标识由 D 统一设计（Joe：渠道是线索身上的标识，不是分组）。
+  return c.json({ ok: true, id, channel: key, label });
+});
+
 // ---- 快赢③：设置线索"下一步动作 + 日期"（轻CRM）----
 app.post("/api/leads/:id/next-action", async (c) => {
   const id = Number(c.req.param("id"));
@@ -1047,14 +1096,17 @@ app.get("/api/settings/followup", async (c) => {
     delay_days: Number(await getSetting(c.env, "followup_delay_days", "4")) || 4,
     engaged_delay_days: Number(await getSetting(c.env, "engaged_follow_up_delay_days", "2")) || 2,
     max_followups: Number(await getSetting(c.env, "followup_max", "1")) || 1,
+    // 顺带修①：跟进发满后再等几天没回应就归档。**做成设置不写死** —— 这是发信节奏参数，是 Joe 的旋钮。
+    no_reply_days: Number(await getSetting(c.env, "no_reply_days", "7")) || 7,
   });
 });
 app.post("/api/settings/followup", async (c) => {
-  const b = await c.req.json<{ enabled?: boolean; delay_days?: number; engaged_delay_days?: number; max_followups?: number }>().catch(() => ({}));
+  const b = await c.req.json<{ enabled?: boolean; delay_days?: number; engaged_delay_days?: number; max_followups?: number; no_reply_days?: number }>().catch(() => ({}));
   if (b.enabled != null) await setSetting(c.env, "followup_enabled", b.enabled ? "1" : "0");
   if (b.delay_days != null) await setSetting(c.env, "followup_delay_days", String(Math.max(1, Math.min(60, Number(b.delay_days) || 4))));
   if (b.engaged_delay_days != null) await setSetting(c.env, "engaged_follow_up_delay_days", String(Math.max(1, Math.min(60, Number(b.engaged_delay_days) || 2))));
   if (b.max_followups != null) await setSetting(c.env, "followup_max", String(Math.max(1, Math.min(5, Number(b.max_followups) || 1))));
+  if (b.no_reply_days != null) await setSetting(c.env, "no_reply_days", String(Math.max(1, Math.min(90, Number(b.no_reply_days) || 7))));
   return c.json({ ok: true });
 });
 // ---- 无回复跟进：手动跑一批 ----
@@ -1750,6 +1802,39 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   try { if (env.LARK_IMAP_PASS) { const r = await ingestReplies(env); replies = r.ingested || 0; } } catch (e) { console.error("replies:", e); }
   // 3.5) 无回复自动跟进（仅当开关开启；每轮最多 5 封，遵守每日上限）
   try { await sendFollowupBatch(env, 5); } catch (e) { console.error("followup:", e); }
+
+  // 3.55) 顺带修①「没回音出口」：跟进次数用尽 + 又过了 X 天还是没回应 → 归档。
+  //
+  // 为什么需要：现在这批人**没有出口** —— 跟进发完 followup_max 次后，它们永远躺在「已发送」格里，
+  // 既不会再被跟进（HAVING sent_count <= max 把它们排除了），也不会消失。格子只涨不消 =
+  // Joe 打开就看到一堆早已没戏的线索，真正该看的被淹掉。
+  //
+  // 归档到既有的 `ignored`（＝归档桶），**不新开状态**：
+  //   · `no_reply` 是我在批③A 删掉的孤儿状态，重新加它要动 ALLOWED_STATUS + 分组 + 徽章 + 左栏，
+  //     那不叫"顺带修"；
+  //   · 而且 D 正在重新设计状态（归档是个桶），新开一个 D 大概率要改名。
+  //   原因写进 notes（详情页看得见），别让"机器放弃了"和"Joe 主动忽略"完全分不出来。
+  //
+  // ⚠️ 只碰 status='sent'：已回复/成交/退订/黑名单/退信 天然不在范围内。
+  try {
+    const noReplyDays = Math.max(1, Number(await getSetting(env, "no_reply_days", "7")) || 7);
+    const maxFollowups = Math.max(1, Number(await getSetting(env, "followup_max", "3")) || 3);
+    const r = await env.DB.prepare(
+      `UPDATE leads SET status='ignored',
+              notes = substr(COALESCE(notes,'') || char(10) || '[' || datetime('now') || '] 自动归档·没回音：跟进已发满且 '
+                      || ? || ' 天无任何回应', -4000),
+              updated_at = datetime('now')
+        WHERE id IN (
+          SELECT l.id FROM leads l JOIN emails e ON e.lead_id=l.id AND e.status='sent'
+           WHERE l.status='sent'
+           GROUP BY l.id
+          HAVING COUNT(e.id) > ?                                   -- 跟进次数已用尽（初次信也算在 sent_count 里）
+             AND MAX(e.sent_at) <= datetime('now', ?)              -- 最后一封发出后又过了 X 天
+        )`
+      // ⚠️ noReplyDays 绑成**字符串**：绑 JS number 时 SQLite 会渲染成 "7.0 天"，Joe 看到的就是这行字
+    ).bind(String(noReplyDays), maxFollowups, `-${noReplyDays} days`).run();
+    if (r.meta.changes) console.log(`no-reply archive: ${r.meta.changes} 条（跟进发满 + ${noReplyDays} 天无回应）→ 已归档`);
+  } catch (e) { console.error("no-reply-archive:", e); }
   // 3.6) 关键词优化：按真实回复率重算权重（放发送/回复之后，让新数据参与本轮加权）
   try { await recomputeKeywordStats(env); } catch (e) { console.error("kwstats:", e); }
   // 3.7) 清理落地页频率限制表（>1 天的旧记录，防膨胀）

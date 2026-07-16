@@ -170,7 +170,7 @@ function cleanTitle(t: string): string {
 
 // M1 公司名：优先用域名主标签推公司名（比搜索标题碎片可靠：域名一定是这家公司的站）。
 // betamarineusa.com → "Betamarineusa"；foo-bar.co.uk → "Foo Bar"。返回 "" 时调用方回落 cleanTitle。
-function companyFromDomain(domain: string): string {
+export function companyFromDomain(domain: string): string {
   const host = (domain || "").replace(/^www\./, "").toLowerCase();
   if (!host) return "";
   const parts = host.split(".").filter(Boolean);
@@ -181,6 +181,75 @@ function companyFromDomain(domain: string): string {
   label = label.replace(/[-_]+/g, " ").trim();
   if (!label) return "";
   return label.split(" ").map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w)).join(" ").slice(0, 80);
+}
+
+// ⭐ 顺带修③ 入库去重：以前三处都写 `WHERE website=? OR website=?`（原文比对 + 一个 www 变体）——
+//   **同一个缺陷复制了三份**，而且都漏：协议不同、大小写不同、尾部斜杠都能骗过它。
+//   生产实证（只读查出来的）：
+//     #163 https://2csyachtoutfitters.com   vs  #238 http://www.2CsYachtOutfitters.com  ← 同一个站，录了两次
+//     #165 https://alliancenav.com          vs  #241 http://www.alliancenav.com
+//   后果不只是列表里多几行：两行的**邮箱是同一个**，而发信幂等按 lead_id 判 → 同一个地址会收到两封冷邮件。
+//   （发信那一层我也加了按邮箱地址的兜底，见 send.ts；这里是堵源头。）
+//
+/** 规范化域名：去协议、去 www、转小写、去尾斜杠和路径 → 用它比对才认得出"同一个站" */
+export function normalizeHost(url: string): string {
+  const s = String(url || "").trim().toLowerCase();
+  if (!s) return "";
+  const noProto = s.replace(/^https?:\/\//, "");
+  const host = noProto.split("/")[0].split("?")[0].split("#")[0];
+  return host.replace(/^www\./, "").replace(/\.$/, "");
+}
+
+/** 这个网址是否已在库里（按规范化域名比对，认得出 http/https、www、大小写、尾斜杠的差异） */
+export async function findLeadByHost(env: Env, url: string): Promise<{ id: number } | null> {
+  const host = normalizeHost(url);
+  if (!host) return null;
+  // SQLite 没有正则；用 lower(...) + 四种常见前缀形态覆盖（比原来的两种全，且认大小写）
+  const row = await env.DB.prepare(
+    `SELECT id FROM leads
+      WHERE lower(replace(replace(replace(rtrim(website,'/'),'https://',''),'http://',''),'www.','')) = ?
+      LIMIT 1`
+  ).bind(host).first<{ id: number }>();
+  return row || null;
+}
+
+/**
+ * 跨域名疑似同一家（总工点名的 SPACETEK .com.au/.co.nz 那类）：域名主体相同即疑似。
+ * **标记不合并** —— 它们可能真是同一家的多个区域站（生产实测：seasucker.com/.eu/.de、
+ * spacetek.com.au/.co.nz、datalake.ph/.id），也可能只是撞名。
+ * **合并是不可逆的，标记是可逆的**；由人决定。
+ */
+export async function findSiblingByRoot(env: Env, url: string): Promise<{ id: number; company_name: string; website: string } | null> {
+  const host = normalizeHost(url);
+  const label = companyFromDomain(host).toLowerCase().replace(/\s+/g, "");
+  if (!label || label.length < 4) return null;   // 太短的主体（如 abc）撞名概率高，不报疑似
+  const rows = (await env.DB.prepare(
+    "SELECT id, company_name, website FROM leads WHERE website IS NOT NULL AND website != '' LIMIT 2000"
+  ).all()).results as any[];
+  for (const r of rows) {
+    const h = normalizeHost(r.website);
+    if (h === host) continue;                     // 同一个站是"重复"不是"疑似同一家"，归 findLeadByHost 管
+    if (companyFromDomain(h).toLowerCase().replace(/\s+/g, "") === label) return r;
+  }
+  return null;
+}
+
+/**
+ * 入库后给"疑似同一家"打标记（写 notes，详情页可见）。
+ * 用 notes 而不是新加一列：不需要迁移，而且**这是给人看的提示不是机器的判据** ——
+ * 机器不该据此自动合并/跳过，它只是在 Joe 打开这条时告诉他"隔壁还有一个长得像的"。
+ */
+export async function markSibling(env: Env, leadId: number, website: string): Promise<void> {
+  if (!leadId) return;
+  try {
+    const sib = await findSiblingByRoot(env, website);
+    if (!sib) return;
+    await env.DB.prepare(
+      `UPDATE leads SET notes = substr(COALESCE(notes,'') || char(10) || '[' || datetime('now') || '] 疑似与 #' || ?
+              || '（' || ? || '）是同一家：域名主体相同、站点不同。**没有自动合并** —— 可能真是同一家的多个区域站，也可能只是撞名，你来判断。', -4000)
+        WHERE id = ?`
+    ).bind(sib.id, sib.website, leadId).run();
+  } catch (e) { console.error("markSibling:", e); }   // 打标记失败不该拖垮入库
 }
 
 // 快赢②：识别"文章/攻略/资讯页"而非真实经营的公司/买家，入库前过滤掉最明显的噪音。
@@ -259,15 +328,15 @@ export async function runDiscovery(env: Env, opts: { keywords?: string[]; perKey
       if (isLikelyArticle(r.title, r.url)) { contentSkipped++; continue; }
       seenThisRun.add(domain);
       const website = "https://" + domain;
-      const dup = await env.DB.prepare(
-        "SELECT id FROM leads WHERE website=? OR website=? LIMIT 1"
-      ).bind(website, "https://www." + domain).first();
+      // 按规范化域名去重（认得出 http/https、www、大小写、尾斜杠 —— 原来的原文比对全漏，见 normalizeHost 注释）
+      const dup = await findLeadByHost(env, website);
       if (dup) { skipped++; continue; }
       const company = companyFromDomain(domain) || cleanTitle(r.title);   // M1 域名推名优先，回落标题
       const country = inferCountryFromWebsite(website) || gl.toUpperCase(); // M2 ccTLD 推真实所在国优先，gl 仅兜底；统一大写
-      await env.DB.prepare(
+      const ins = await env.DB.prepare(
         "INSERT INTO leads (company_name, website, country, source, keyword, status) VALUES (?, ?, ?, 'search', ?, 'new')"
       ).bind(company, website, country, kw).run();
+      await markSibling(env, Number(ins.meta.last_row_id), website);   // 跨域名疑似同一家 → 打标记，不合并
       inserted++;
     }
   }
@@ -318,14 +387,15 @@ export async function runNmeaDiscovery(env: Env, affcode: string): Promise<Direc
     if (!domain || isJunkDomain(domain) || seen.has(domain)) { out.skipped++; continue; }
     seen.add(domain);
     const website = href.startsWith("http") ? href.replace(/\/+$/, "") : "https://" + domain;
-    const dup = await env.DB.prepare("SELECT id FROM leads WHERE website=? OR website=? LIMIT 1").bind(website, "https://www." + domain).first();
+    const dup = await findLeadByHost(env, website);   // 规范化比对，见 normalizeHost
     if (dup) { out.skipped++; continue; }
     const company = rawName || companyFromDomain(domain) || "(unknown)";
     const country = inferCountryFromWebsite(website) || null;   // ccTLD 能推则填，否则留空由 AI 分析回填
     // ⭐ 存 affcode（Dealer / International）到 keyword：以前只写 source='nmea'，把这条丢了 →
     //    入库后再也分不清哪条来自哪个分支，来源背书也就没法分级、没法追溯。
     //    （存量那 196 条的 keyword 全是 NULL，无法回溯，统一按泛称 "NMEA 目录" 处理。）
-    await env.DB.prepare("INSERT INTO leads (company_name, website, country, source, keyword, status) VALUES (?, ?, ?, 'nmea', ?, 'new')").bind(company, website, country, aff).run();
+    const ins = await env.DB.prepare("INSERT INTO leads (company_name, website, country, source, keyword, status) VALUES (?, ?, ?, 'nmea', ?, 'new')").bind(company, website, country, aff).run();
+    await markSibling(env, Number(ins.meta.last_row_id), website);   // 跨域名疑似同一家 → 打标记，不合并
     out.inserted++;
   }
   return out;
@@ -392,9 +462,10 @@ export async function runLinkHarvest(env: Env, url: string, source: string, blac
     if (!domain || isJunkDomain(domain) || bl.some((b) => domain.includes(b)) || seen.has(domain)) { out.skipped++; continue; }
     seen.add(domain);
     const website = "https://" + domain;
-    const dup = await env.DB.prepare("SELECT id FROM leads WHERE website=? OR website=? LIMIT 1").bind(website, "https://www." + domain).first();
+    const dup = await findLeadByHost(env, website);   // 规范化比对，见 normalizeHost
     if (dup) { out.skipped++; continue; }
-    await env.DB.prepare("INSERT INTO leads (company_name, website, country, source, status) VALUES (?, ?, ?, ?, 'new')").bind(companyFromDomain(domain) || "(unknown)", website, inferCountryFromWebsite(website) || null, source).run();
+    const ins = await env.DB.prepare("INSERT INTO leads (company_name, website, country, source, status) VALUES (?, ?, ?, ?, 'new')").bind(companyFromDomain(domain) || "(unknown)", website, inferCountryFromWebsite(website) || null, source).run();
+    await markSibling(env, Number(ins.meta.last_row_id), website);   // 跨域名疑似同一家 → 打标记，不合并
     out.inserted++;
   }
   return out;
