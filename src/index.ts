@@ -1472,6 +1472,104 @@ app.post("/api/inbound", async (c) => {
   return c.json({ ok: true });
 });
 
+// ---- 重扫状态（前端进度条轮询它；也是"还没 arm"的判据）----
+app.get("/api/rescan/status", async (c) => {
+  const startedAt = (await getSetting(c.env, "rescan_started_at", "")).trim();
+  const doneAt = (await getSetting(c.env, "rescan_done_at", "")).trim();
+  const total = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first<{ n: number }>())?.n || 0;
+  const remaining = startedAt ? await rescanRemaining(c.env, startedAt) : 0;
+  // 两组的**真实**条数 —— 确认弹窗要用它说清"会发生什么"。**绝不能在前端写死**：
+  // 写死的数字今天恰好对，线索涨到 800 之后那段文案就变成一句谎话。
+  const marks = RESCAN_RESET_STATUSES.map(() => "?").join(",");
+  const resetGroup = (await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM leads WHERE status IN (${marks})`)
+    .bind(...RESCAN_RESET_STATUSES).first<{ n: number }>())?.n || 0;
+  return c.json({
+    armed: !!startedAt, startedAt, doneAt, total, remaining, done: total - remaining,
+    resetGroup, refreshGroup: total - resetGroup,
+    stats: await rescanStats(c.env),
+  });
+});
+
+// ---- 开始重扫：重置 + 打时间戳（**这一步会动存量数据**）----
+// ⚠️ 打时间戳必须和重置在同一个动作里、且戳在前：rescanTick 靠 `analyzed_at < rescan_started_at`
+//    判断"谁还没扫"，戳晚于重置的话，中间被扫过的线索会被判成"已扫"而漏掉。
+app.post("/api/rescan/start", async (c) => {
+  // 安全闸：自动发送开着时不许开重扫 —— 重置会把 approved 打回 new，重扫过程中它们重新拿到 ≥60
+  // 就会被立刻发出去，那正是"按刚被宣布作废的旧流程发信"。
+  if ((await getSetting(c.env, "auto_send_enabled", "1")) === "1") {
+    return c.json({ error: "请先关闭「自动发送」再开始重扫 —— 否则重扫过程中线索会边打分边被发出去（用的还是半新半旧的标准）" }, 409);
+  }
+  const startedAt = new Date().toISOString().replace("T", " ").slice(0, 19);
+  await setSetting(c.env, "rescan_started_at", startedAt);
+  await setSetting(c.env, "rescan_done_at", "");
+  // 重置组 → 打回 new、清旧结论、清抓站失败计数（首页超时已从 8s 提到 18s，上次因超时判"抓不到"的这次可能抓得到）。
+  // human_approved 一并归零：status 被打回 new = 批准已被撤销；留着 1 会让翻牌堆 UI 显示「已人工放行」
+  // 并禁用按钮、反而让 Joe 按不了，而那次放行基于的正是这次要作废的旧证据。
+  const marks = RESCAN_RESET_STATUSES.map(() => "?").join(",");
+  await c.env.DB.prepare(
+    `DELETE FROM lead_analysis WHERE lead_id IN (SELECT id FROM leads WHERE status IN (${marks}))`
+  ).bind(...RESCAN_RESET_STATUSES).run();
+  const r = await c.env.DB.prepare(
+    `UPDATE leads SET status='new', fetch_fail_count=0, human_approved=0, updated_at=datetime('now')
+      WHERE status IN (${marks})`
+  ).bind(...RESCAN_RESET_STATUSES).run();
+  const remaining = await rescanRemaining(c.env, startedAt);
+  console.log(`rescan start: 重置 ${r.meta.changes} 条 → new；待重扫 ${remaining} 条`);
+  return c.json({ ok: true, startedAt, reset: r.meta.changes || 0, remaining });
+});
+
+// ---- 重扫一批（前端自驱循环调它，直到 done）----
+app.post("/api/rescan/batch", async (c) => {
+  const b = await c.req.json<{ limit?: number }>().catch(() => ({}));
+  const limit = Math.min(Math.max(Number(b.limit) || 10, 1), RESCAN_MAX_PER_CALL);
+  const startedAt = (await getSetting(c.env, "rescan_started_at", "")).trim();
+  if (!startedAt) return c.json({ error: "还没开始重扫（先点「重扫全部」）" }, 409);
+
+  const batch = (await c.env.DB.prepare(
+    `SELECT l.* FROM leads l LEFT JOIN lead_analysis a ON a.lead_id = l.id
+      WHERE (a.lead_id IS NULL OR a.analyzed_at IS NULL OR a.analyzed_at < ?)
+      ORDER BY l.id ASC LIMIT ?`
+  ).bind(startedAt, limit).all()).results as any[];
+
+  if (!batch.length) {
+    // 收尾：统计 + 推飞书 + 记完成（幂等：rescan_done_at 已写就不再推）
+    const stats = await rescanStats(c.env);
+    if (!(await getSetting(c.env, "rescan_done_at", "")).trim()) {
+      await setSetting(c.env, "rescan_done_at", new Date().toISOString().replace("T", " ").slice(0, 19));
+      console.log(`rescan done: ≥${APPROVE_MIN_SCORE}=${stats.hi} <${APPROVE_MIN_SCORE}=${stats.lo} 抓不到=${stats.nil}`);
+      try {
+        if (larkConfigured(c.env)) {
+          await larkSend(c.env, { msg_type: "text", content: { text:
+            `TEJOY ✅ 全量重扫完成\n` +
+            `· ${stats.hi} 家 ≥${APPROVE_MIN_SCORE}（自动通道）\n` +
+            `· ${stats.lo} 家 <${APPROVE_MIN_SCORE}（翻牌堆待复核）\n` +
+            `· ${stats.nil} 家 官网抓不到（未打分，不是不合格）\n\n` +
+            `全部按最终标准重打完毕。自动发送仍是关闭状态 —— 要不要重开由 Joe 决定。` } });
+        }
+      } catch (e) { console.error("rescan-digest:", e); }
+    }
+    return c.json({ done: true, processed: 0, remaining: 0, stats });
+  }
+
+  let ok = 0, fetchFail = 0, hardFail = 0;
+  for (const lead of batch) {
+    // 只刷新组：status 不在重置名单里 → 只要新分数+新证据，不重写草稿（那封信已经发出去了）
+    const scoreOnly = !RESCAN_RESET_STATUSES.includes(String(lead.status));
+    try {
+      // rescan:true 让 recordFetchFailure 的"别抹掉真分数"守卫让路 —— 重扫时旧分数已被宣布作废，
+      // 抓不到就该诚实记成「官网抓不到·无法判断」，而不是留个作废标准的分数；
+      // 且不让路会导致这条线索每次被重取、重扫永不完成（见 service.ts 那段注释）。
+      const out = await analyzeLead(c.env, lead, { scoreOnly, rescan: true });   // OpenRouter 串行：for 里 await
+      if (out.ok) ok++;
+      else if (out.fetchFailed) fetchFail++;
+      else hardFail++;
+    } catch (e) { hardFail++; console.error("rescan:", lead.id, e); }
+  }
+  const remaining = await rescanRemaining(c.env, startedAt);
+  console.log(`rescan batch: ok=${ok} 抓不到=${fetchFail} 失败=${hardFail} 剩余=${remaining}`);
+  return c.json({ done: false, processed: batch.length, ok, fetchFail, hardFail, remaining, stats: await rescanStats(c.env) });
+});
+
 // ---- 非 /api 请求交给静态资源（后台前端）----
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
@@ -1480,23 +1578,26 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 // 背景：这几天标准被重定了（H3-v2 去掉体量闸 + 来源背书 + 首页 18s 超时 + 证据页优先），
 // 库里 433 家的分数是新旧标准的混合物 —— 一个混合物做不了任何决策。Joe 要求全部按最终标准重打。
 //
-// ⭐ 设计的两个关键点：
+// ⭐ 设计的三个关键点：
 //
-// 1) **节奏与 discovery 解耦**（总工点名的硬约束）：不改 `0 */6 * * *` 那班的频率，
-//    而是**新增一个只做重扫的 cron**，按 `event.cron` 分派。这样 discovery 仍然 6h 一班、
-//    Serper 烧钱速率一个字节都没变。重扫班挂在 **:30**（`30 * * * *`）——
-//    跟 6h 班的 :00 **永不同刻触发**，避免两班抢同一批 status='new' 做重复 LLM 调用。
+// 1) **走交互式批量通道，不走 cron**（Joe 驳回了我第一版的 cron 方案）。
+//    他的标准："如果每天只能分析30-50个信息，我压根都不需要用AI了。" ——
+//    cron 的 12 条/班是**无人值守后台**的保守值，拿它跑一次性批量任务是思维惯性错误。
+//    通道容量早已被证明：Joe 手点「批量分析」一小时扫了两百多条。
+//    所以重扫复用同一条通道（后台按钮 + 前端自驱循环，每批 ≤20 串行），428 条**当天跑完**。
+//    → cron 那班一个字没动，Serper 烧钱速率自然也没动（重扫压根不经过 cron）。
 //
 // 2) **只刷新组安全的依据是 analyzeLead 的既有性质**，不是我新写的判断：
 //    它推进 status 的那条 SQL 带 `AND status='new'` —— 一条 sent/replied/ignored 的线索走完
 //    analyzeLead，analysis 换新、status 纹丝不动、更不可能触发发信（发信在 sendApprovedBatch 里，
 //    这条路根本不经过它）。所以两组共用一个函数，只用 scoreOnly 区分要不要重写草稿。
 //
-// 完成判定：没有线索再需要重扫 → 推飞书 + 记 rescan_done_at（防重复推）。
-const RESCAN_CRON = "30 * * * *";     // 重扫专班（与 6h 主班错开半小时）
-const RESCAN_PER_TICK = 12;           // 每班 12 条 —— 与主班既有的 CRON_ANALYZE_MAX 一致（那个节奏已在生产验证过）
-// 重置组：这些状态的线索会被重置 SQL 打回 new 重新分档；其余状态只刷新 analysis、status 不动
+// 3) **进度靠 DB 状态推导，不靠内存**：谁没扫 = `analysis 缺失 或 analyzed_at < rescan_started_at`。
+//    这让整件事**天然可断点续跑** —— 浏览器关了/网断了/中途叫停，再点一次就从断点继续，
+//    不需要任何"任务进度"表。
+// 重置组：这些状态的线索会被打回 new 重新分档；其余状态只刷新 analysis、status 不动
 const RESCAN_RESET_STATUSES = ["new", "analyzed", "approved", "queued", "pending"];
+const RESCAN_MAX_PER_CALL = 20;   // 单次调用上限（与既有 /api/analyze/batch 的 20 一致 —— 那条通道 Joe 手点实测过）
 
 /** 还有几条没重扫（analysis 缺失 或 analyzed_at 早于本轮重扫开始时间） */
 async function rescanRemaining(env: Env, startedAt: string): Promise<number> {
@@ -1507,67 +1608,22 @@ async function rescanRemaining(env: Env, startedAt: string): Promise<number> {
   return r?.n ?? 0;
 }
 
-async function rescanTick(env: Env): Promise<void> {
-  const startedAt = (await getSetting(env, "rescan_started_at", "")).trim();
-  if (!startedAt) return;                                     // 没开重扫 → 这班什么都不做
-  if ((await getSetting(env, "rescan_done_at", "")).trim()) return;  // 已完成 → 别再跑
-
-  const batch = (await env.DB.prepare(
-    `SELECT l.* FROM leads l LEFT JOIN lead_analysis a ON a.lead_id = l.id
-      WHERE (a.lead_id IS NULL OR a.analyzed_at IS NULL OR a.analyzed_at < ?)
-      ORDER BY l.id ASC LIMIT ?`
-  ).bind(startedAt, RESCAN_PER_TICK).all()).results as any[];
-
-  if (!batch.length) {
-    // 收尾：统计 + 推飞书 + 标记完成（幂等：rescan_done_at 一写，后续班次直接 return）
-    const s = await env.DB.prepare(
-      `SELECT SUM(CASE WHEN a.match_score >= ${APPROVE_MIN_SCORE} THEN 1 ELSE 0 END) AS hi,
-              SUM(CASE WHEN a.match_score IS NOT NULL AND a.match_score < ${APPROVE_MIN_SCORE} THEN 1 ELSE 0 END) AS lo,
-              SUM(CASE WHEN a.match_score IS NULL THEN 1 ELSE 0 END) AS nil
-         FROM leads l JOIN lead_analysis a ON a.lead_id = l.id`
-    ).first<{ hi: number; lo: number; nil: number }>();
-    await setSetting(env, "rescan_done_at", new Date().toISOString().replace("T", " ").slice(0, 19));
-    console.log(`rescan done: ≥${APPROVE_MIN_SCORE}=${s?.hi} <${APPROVE_MIN_SCORE}=${s?.lo} 抓不到=${s?.nil}`);
-    try {
-      if (larkConfigured(env)) {
-        await larkSend(env, { msg_type: "text", content: { text:
-          `TEJOY ✅ 全量重扫完成\n` +
-          `· ${s?.hi ?? 0} 家 ≥${APPROVE_MIN_SCORE}（自动通道）\n` +
-          `· ${s?.lo ?? 0} 家 <${APPROVE_MIN_SCORE}（翻牌堆待复核）\n` +
-          `· ${s?.nil ?? 0} 家 官网抓不到（未打分，不是不合格）\n\n` +
-          `全部按最终标准重打完毕。自动发送仍是关闭状态 —— 要不要重开由 Joe 决定。` } });
-      }
-    } catch (e) { console.error("rescan-digest:", e); }
-    return;
-  }
-
-  let ok = 0, fetchFail = 0, hardFail = 0;
-  for (const lead of batch) {
-    // 只刷新组：status 不在重置名单里 → 只要新分数+新证据，不重写草稿（那封信已经发出去了）
-    const scoreOnly = !RESCAN_RESET_STATUSES.includes(String(lead.status));
-    try {
-      // rescan:true 让 recordFetchFailure 的"别抹掉真分数"守卫让路 —— 重扫时旧分数已被宣布作废，
-      // 抓不到就该诚实记成「官网抓不到·无法判断」，而不是留个作废标准的分数；
-      // 且不让路会导致这条线索每班被重取、重扫永不完成（见 service.ts 那段注释）。
-      const out = await analyzeLead(env, lead, { scoreOnly, rescan: true });
-      if (out.ok) ok++;
-      else if (out.fetchFailed) fetchFail++;
-      else hardFail++;
-    } catch (e) { hardFail++; console.error("rescan:", lead.id, e); }
-  }
-  const left = await rescanRemaining(env, startedAt);
-  console.log(`rescan tick: ok=${ok} 抓不到=${fetchFail} 失败=${hardFail} 剩余=${left}`);
+/** 重扫的分档统计（完成播报 + 进度条都用它） */
+async function rescanStats(env: Env): Promise<{ hi: number; lo: number; nil: number }> {
+  const s = await env.DB.prepare(
+    `SELECT SUM(CASE WHEN a.match_score >= ${APPROVE_MIN_SCORE} THEN 1 ELSE 0 END) AS hi,
+            SUM(CASE WHEN a.match_score IS NOT NULL AND a.match_score < ${APPROVE_MIN_SCORE} THEN 1 ELSE 0 END) AS lo,
+            SUM(CASE WHEN a.match_score IS NULL THEN 1 ELSE 0 END) AS nil
+       FROM leads l JOIN lead_analysis a ON a.lead_id = l.id`
+  ).first<{ hi: number; lo: number; nil: number }>();
+  return { hi: s?.hi ?? 0, lo: s?.lo ?? 0, nil: s?.nil ?? 0 };
 }
 
 // Cron 定时任务：自动找客户 + 自动分析新线索（7×24 运行）
 async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-  // ⭐ 按 cron 分派：重扫专班只做重扫，绝不碰 discovery/发信/跟进/简报 ——
-  //    这是"重扫节奏与 discovery 烧钱速率解耦"的实现方式（总工的硬约束）。
-  if (event.cron === RESCAN_CRON) {
-    try { await rescanTick(env); } catch (e) { console.error("rescan-tick:", e); }
-    return;
-  }
-
+  // ⚠️ 全量重扫**不在这里** —— 它走交互式批量通道（/api/rescan/*，后台按钮驱动）。
+  //    cron 这 12 条/班是**日常新增线索**的节奏；拿它跑一次性批量任务要 9 天，
+  //    而 Joe 的标准是"428 条当天跑完"。两件事，两条通道，互不干扰。
   let inserted = 0, analyzed = 0, replies = 0, autoApproved = 0, autoSent = 0;
 
   // 1) 搜索找新客户（每关键词 5 条，控制用量）—— #S1 受 discovery_enabled 开关控制（默认关，防 cron 每 6h 全量烧 Serper 积分）

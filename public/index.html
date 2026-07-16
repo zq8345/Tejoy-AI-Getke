@@ -80,6 +80,12 @@
     .st-new { background:#33383f; color:#cfd6e2; }
     /* 待分析：机器还没处理完，人不用做什么 → 比「待审核」(等你审) 更暗、更安静，别抢注意力 */
     .st-todo { background:#2b2f36; color:#8c94a3; }
+    /* 批⑥A 重扫进度：428 家要跑 1-2 小时，**绝不能是黑盒** —— 必须实时看得见在动 */
+    .rescan-bar { margin-top:9px; padding:9px 11px; border:1px solid var(--border); border-radius:7px;
+      background:var(--bg); font-size:13px; line-height:1.7; }
+    .rescan-bar.rescan-err { border-color:#7a3b36; background:#2b1b1a; color:#ffb3ab; }
+    .rescan-track { height:6px; background:#2a2f36; border-radius:3px; overflow:hidden; margin:6px 0 4px; }
+    .rescan-fill { height:100%; background:linear-gradient(90deg,#3a5a86,#4be3a5); transition:width .3s; }
     /* 批⑤B 翻牌堆：组名要能一眼扫，证据摘要要能一行看懂 */
     .fp-intro { font-size:13px; color:var(--text); margin:8px 0 12px; line-height:1.7; }
     .fp-intro .hint { display:block; margin-top:2px; }
@@ -489,6 +495,19 @@
 
         <!-- 批④：积压刹车条 —— 进货前先看管道里堵了多少（与"本轮将抓多少"并排，别只顾鼓励抓更多） -->
         <div id="fc-backlog" class="fc-backlog" style="display:none"></div>
+
+        <!-- 批⑥A：全量重扫。放在「客户画像·打分标准」正上方 —— 改完标准，下一个动作就是让存量按新标准重打 -->
+        <div class="fc-card" style="border-color:#3a5a86">
+          <div class="fc-title">🔄 全量重扫</div>
+          <p class="hint" style="margin:2px 0 8px">
+            打分标准改动后，库里的分数会变成<b>新旧标准的混合物</b> —— 混合物做不了决策。
+            重扫会把全部线索按<b>当前最新标准</b>重新分析打分。<br>
+            已发信/已回复/已忽略/退订的：<b>只刷新分数和证据，状态一个都不动</b>，不会触发任何发信。
+          </p>
+          <button class="btn-amber" onclick="startRescan()">🔄 重扫全部</button>
+          <span class="hint" id="rescan-hint" style="margin-left:8px"></span>
+          <div id="rescan-bar" class="rescan-bar" style="display:none"></div>
+        </div>
 
         <!-- 1) 客户画像·打分标准（全局，不折叠，第一块） -->
         <div class="fc-card">
@@ -1656,6 +1675,100 @@
       if (res.error) { if(btn){ btn.disabled=false; btn.textContent="AI 分析（失败，重试）"; } alert("分析失败: " + res.error); return; }
       await openDetail(id); loadStats(); loadList(); loadFacets();
     };
+
+    // ⭐ 批⑥A 全量重扫：走**跟批量分析同一条通道**（Joe 手点实测过一小时两百多条），
+    //   不走 cron —— cron 的 12 条/班是"日常新增线索"的节奏，拿它跑 428 条要 9 天。
+    //   进度靠后端从 DB 推导（analyzed_at < rescan_started_at），所以**天然可断点续跑**：
+    //   浏览器关了/网断了/中途停，再点一次就从断点继续。
+    window.startRescan = async () => {
+      const st = await fetch("/api/rescan/status").then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (st.error){ toolMsg("读取重扫状态失败: "+esc(st.error)); return; }
+      // 已 arm 且没扫完 → 直接续跑，不再重置一次（重置是破坏性的，只该发生一次）
+      const resume = st.armed && st.remaining > 0;
+      if (!resume) {
+        // 两组条数与耗时都从后端的真实计数算 —— 写死的数字今天恰好对，线索一涨就变成谎话
+        const mins = Math.max(1, Math.round(st.total * 12 / 60));   // 每条约 12s（抓官网 + 两次模型调用）
+        if(!(await uiConfirm({ title:`全量重扫 ${st.total} 家？`,
+          body:`把**全部 ${st.total} 家**按最新标准重新分析打分。为什么要做：这几天打分标准改了好几处`
+            + `（去掉体量闸／来源背书／首页超时 8s→18s／证据页优先），库里的分数是**新旧标准的混合物**，做不了决策。\n\n`
+            + `**会发生什么**：\n`
+            + `· 待分析/待审批/待发送的 **${st.resetGroup} 家** → **旧结论清空、打回待分析**，重新走完整流水线\n`
+            + `· 已发信/已回复/已忽略/退订/黑名单的 **${st.refreshGroup} 家** → **只刷新分数和证据，状态一个都不动**，`
+            + `绝不会因此触发任何发信，已发出的信也不会被改写\n`
+            + `· 已经人工放行过的会被撤销（那次放行基于的正是这次要作废的旧证据）\n\n`
+            + `**耗时**：每条要抓官网 + 调两次模型，${st.total} 家大约 **${mins} 分钟**。**这个页面要一直开着**，`
+            + `关了就停（再点一次会从断点继续，不会重头来）。\n\n`
+            + `⚠️ 自动发送必须先关掉 —— 否则线索会边打分边被发出去，用的还是半新半旧的标准。`,
+          confirmText:`重扫 ${st.total} 家` }))) return;
+        const s = await fetch("/api/rescan/start",{method:"POST"}).then(r=>r.json()).catch(e=>({error:String(e)}));
+        if (s.error){ rescanMsg(`❌ ${esc(s.error)}`, true); return; }
+      }
+      await drainRescan();
+    };
+    function rescanMsg(html, isErr){
+      const el = $("#rescan-bar"); if(!el) return;
+      el.style.display = ""; el.className = "rescan-bar" + (isErr?" rescan-err":"");
+      el.innerHTML = html;
+    }
+    // 进度渲染抽出来 —— 轮询器和批次返回都要用它，别两处各写一份（口径会漂）
+    function renderRescanProgress(total, remaining, stats, failAll){
+      const done = total - remaining, pct = total ? Math.round(done/total*100) : 0;
+      const s = stats||{};
+      rescanMsg(`🔄 <b>重扫中 ${done}/${total}</b>（${pct}%）　<span class="hint">这个页面别关</span>`
+        + `<div class="rescan-track"><div class="rescan-fill" style="width:${pct}%"></div></div>`
+        + `<span class="hint">当前分档：≥${SCORE_LINE} 分 ${s.hi||0} 家　·　&lt;${SCORE_LINE} 分 ${s.lo||0} 家　·　抓不到 ${s.nil||0} 家`
+        + (failAll?`　·　模型失败 ${failAll} 次`:``) + `</span>`);
+    }
+    async function drainRescan(){
+      const BATCH = 10, MAX_ROUNDS = 200;   // 200×10=2000 上限，防死循环
+      let rounds = 0, prevLeft = Infinity, stuck = 0, okAll = 0, failAll = 0;
+      const st0 = await fetch("/api/rescan/status").then(r=>r.json());
+      const total = st0.total || 0;
+      // ⭐ 立刻先画一次 + 边跑边轮询。**不能等第一批返回再画**：
+      //   一批 10 条 ≈ 2 分钟，Joe 点完按钮会先盯着 2 分钟的空白，之后也是每 2 分钟才跳一格 ——
+      //   428 家要跑 1-2 小时，全程黑盒 = 他没法判断是在跑还是卡死了。
+      //   status 端点是从 DB 现算的，所以**批次执行中它就能看见逐条进度** → 每 2 秒刷一次，数字是活的。
+      renderRescanProgress(total, st0.remaining ?? total, st0.stats, 0);
+      const poll = setInterval(async () => {
+        try {
+          const s = await fetch("/api/rescan/status").then(r=>r.json());
+          if (s && !s.doneAt) renderRescanProgress(s.total||total, s.remaining||0, s.stats, failAll);
+        } catch { /* 轮询失败不影响主循环，下一拍再说 */ }
+      }, 2000);
+      const stopPoll = () => clearInterval(poll);
+      while (rounds < MAX_ROUNDS){
+        const r = await fetch("/api/rescan/batch",{method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({limit:BATCH})}).then(r=>r.json()).catch(e=>({error:String(e)}));
+        if (r.error){ stopPoll(); rescanMsg(`❌ 重扫中断：${esc(r.error)}<br><span class="hint">已扫完的不会丢，修好后再点一次会从断点继续。</span>`, true); return; }
+        if (r.done){
+          stopPoll();
+          const s = r.stats||{};
+          rescanMsg(`✅ <b>重扫完成</b> —— 全部 ${total} 家已按最新标准重打<br>`
+            + `<span class="hint">≥${SCORE_LINE} 分 <b>${s.hi||0}</b> 家（自动通道）　·　&lt;${SCORE_LINE} 分 <b>${s.lo||0}</b> 家（翻牌堆待复核）　·　`
+            + `官网抓不到 <b>${s.nil||0}</b> 家（未打分，不是不合格）</span><br>`
+            + `<span class="hint">自动发送仍是关闭的 —— 要不要重开由你决定。</span>`);
+          loadStats(); loadList(); loadFacets(); return;
+        }
+        okAll += r.ok||0; failAll += (r.hardFail||0);
+        // ⭐ 停滞检测**不能照搬 drainAnalyze 的"剩余数不降"**（我第一版就是那么写的，实测差点误报）：
+        //   抓不到官网的线索要**连续失败 3 次**才归档脱队（FETCH_FAIL_MAX），这期间 remaining
+        //   **合法地不下降**。而重扫的尾巴上必然全是这种（它们收敛最慢）→ 会在最后关头假报停滞、
+        //   把还差一轮就完成的重扫掐停。
+        //   真停滞的信号是精确的：这批**全是模型层失败**（ok=0 且 fetchFail=0 且 hardFail>0）
+        //   —— 那才是 OpenRouter 挂了/额度尽。抓站失败是**在推进**（计数在涨，3 次后必归档）。
+        const realStall = (r.ok||0) === 0 && (r.fetchFail||0) === 0 && (r.hardFail||0) > 0;
+        if (realStall){ if(++stuck >= 2){
+          stopPoll();
+          rescanMsg(`⚠️ <b>重扫停下了</b>：连续两批**每一条都是模型调用失败**（不是抓不到官网），多半是 OpenRouter 额度尽或密钥失效。<br>`
+            + `<span class="hint">已停下，没有空转烧额度。已扫完的 ${total - r.remaining} 家不会丢 —— 修好后再点一次会从断点继续。</span>`, true); return; }
+        } else stuck = 0;
+        prevLeft = r.remaining;
+        renderRescanProgress(total, r.remaining, r.stats, failAll);
+        rounds++;
+      }
+      stopPoll();
+      rescanMsg(`⚠️ 达到轮数上限（${MAX_ROUNDS} 轮）还没扫完，已停下防死循环。再点一次会从断点继续。`, true);
+    }
 
     // 抽干式分析：循环调 /api/analyze/batch 直到无 new（或达轮数上限），onProgress(ok,remaining,total) 报进度。
     // 每批是独立请求、各有自己的子请求预算，故能把大量积压全打完（不受单请求子请求上限约束）。
