@@ -106,14 +106,16 @@ export function inboundCard(d: { company?: string; email?: string; country?: str
 }
 
 // 6 小时简报卡片
-export function digestCard(d: { inserted: number; analyzed: number; highScore: { company: string; score: number; category?: string }[]; replies: number; appUrl?: string }) {
-  const hs = d.highScore.length
-    ? d.highScore.slice(0, 10).map((h) => `• ${h.company}（${h.score}分${h.category ? ` · ${h.category}` : ""}）`).join("\n")
-    : "（本轮无 ≥ 阈值 的高分客户）";
+// ⭐ 两档制：原「高分客户」清单已删。理由 —— 自动通道时代，一家 85 分出现在简报里，
+//    意思是**机器已经把信发给它了**，Joe 看了没有任何动作可做 = 噪音。
+//    简报该报的是"机器干了什么"+"有没有需要你的事"。
+export function digestCard(d: { inserted: number; analyzed: number; replies: number; autoApproved?: number; autoSent?: number; needYou?: number; appUrl?: string }) {
   const elements: any[] = [
     { tag: "div", text: { tag: "lark_md", content: `新找到 **${d.inserted}** 家 · 已分析 **${d.analyzed}** 家 · 新回复 **${d.replies}** 封` } },
     { tag: "hr" },
-    { tag: "div", text: { tag: "lark_md", content: `**高分客户**\n${hs}` } },
+    { tag: "div", text: { tag: "lark_md", content:
+      `**机器这轮干了什么**\n• 自动批准 **${d.autoApproved ?? 0}** 家\n• 自动发信 **${d.autoSent ?? 0}** 封` +
+      (d.needYou ? `\n\n**需要你**：翻牌堆还有 **${d.needYou}** 家待复核` : "") } },
   ];
   if (d.appUrl) elements.push({ tag: "action", actions: [{ tag: "button", text: { tag: "plain_text", content: "打开后台" }, url: d.appUrl, type: "primary" }] });
   return {

@@ -126,9 +126,18 @@ async function getBacklog(env: Env): Promise<{ unscored: number; noEmail: number
 // 注意：index.ts 是 Worker 入口模块，顶层 export 的非函数值会被运行时当成 handler 校验并报
 // "Incorrect type for map entry"（dry-run 查不出、只有真启动才报）→ 这里必须是模块内常量，不能 export。
 const APPROVE_MIN_SCORE = 60;
-// 自动批准门槛（Joe 拍板 ≥70 有邮箱就自动批准自动发）。人工闸只管 60-69 的模糊地带。
-// 注意这**不是**另一条护栏：自动批准仍然要过 approveGateReason，这里只是更高的入选门槛。
-const AUTO_APPROVE_MIN = 70;
+// ⭐ 两档制（Joe 拍板）：**60 是全系统唯一的决策线**。
+//   ≥60 有邮箱 → 机器自动发；<60 → 进「翻牌堆」由 Joe 复核。60-69 的人工拍板区**已取消**。
+//   道理：机器误发一封信成本低、可见、有熔断器兜底；机器误杀一个真客户损失一单、不可见、无兜底
+//   （cayelectronics / 12volt / flarespace / seasucker 都是被埋过的实证）→ 人的火力对准「机器扔掉的堆」。
+//   做成设置项不写死常量：门槛是运营参数，Joe 该能自己调（且 index.ts 顶层 export 非函数会让 Worker
+//   起不来 —— 上次 `export const APPROVE_MIN_SCORE` 的教训，dry-run 还查不出来）。
+const AUTO_APPROVE_MIN_DEFAULT = 60;
+async function getAutoApproveMin(env: Env): Promise<number> {
+  const v = Number(await getSetting(env, "auto_approve_min", String(AUTO_APPROVE_MIN_DEFAULT)));
+  // 不许低于 APPROVE_MIN_SCORE：低了也没用，approveGateReason 那条护栏照样拦，只会造成"设了却不生效"的假象
+  return Number.isFinite(v) ? Math.max(APPROVE_MIN_SCORE, Math.min(100, v)) : AUTO_APPROVE_MIN_DEFAULT;
+}
 function approveGateReason(email: string | null, score: number | null): string | null {
   if (!email || !String(email).trim()) return "缺邮箱，不能批准（先补邮箱）";
   if (score == null) return "未打分，不能批准（先 AI 分析）";
@@ -158,7 +167,7 @@ app.get("/api/stats", async (c) => {
 // cta.action 由前端 dashAction() 映射到对应页面/分组/操作。
 async function buildActionSuggestions(env: Env): Promise<{
   actions: { text: string; cta: { label: string; action: string } | null }[];
-  highNoEmail: number; highNoSend: number; readyCount: number; reviewCount: number;
+  highNoEmail: number; readyCount: number; reviewCount: number;
 }> {
   const db = env.DB;
   const statusRows = await db.prepare("SELECT status, COUNT(*) AS n FROM leads GROUP BY status").all();
@@ -167,16 +176,12 @@ async function buildActionSuggestions(env: Env): Promise<{
   const F = (s: string) => f[s] || 0;
   const sentLeads = (await db.prepare("SELECT COUNT(DISTINCT lead_id) AS n FROM emails WHERE status='sent'").first<{ n: number }>())?.n || 0;
   const viewed = (await db.prepare("SELECT COUNT(*) AS n FROM leads l WHERE l.status='sent' AND EXISTS (SELECT 1 FROM emails e WHERE e.lead_id=l.id AND e.clicked_at IS NOT NULL)").first<{ n: number }>())?.n || 0;
-  const highNoEmail = (await db.prepare("SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id WHERE a.match_score>=80 AND (l.email IS NULL OR l.email='') AND l.status NOT IN ('blacklisted','unsubscribed','bounced')").first<{ n: number }>())?.n || 0;
-  const highNoSend = (await db.prepare("SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id WHERE a.match_score>=80 AND l.status IN ('new','analyzed','pending','approved','queued') AND l.email IS NOT NULL AND l.email!=''").first<{ n: number }>())?.n || 0;
+  // ⭐ 两档制：≥60 无邮箱 = 触达工作台的队列（机器发不了、只能 Joe 用社媒/电话手动碰）——这是真人工活，留着。
+  //    门槛从 80 对齐到 60：80 那条线不对应任何决策，纯装饰。
+  const highNoEmail = (await db.prepare(`SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id WHERE a.match_score>=${APPROVE_MIN_SCORE} AND (l.email IS NULL OR l.email='') AND l.status NOT IN ('blacklisted','unsubscribed','bounced')`).first<{ n: number }>())?.n || 0;
   const replied = F("replied"), bounced = F("bounced"), unsub = F("unsubscribed");
   const readyCount = F("approved") + F("queued");
   const reviewCount = F("analyzed") + F("pending");
-  // 批③D：原列表页绿横幅（≥70分·已打分·有邮箱·未压制 → 批量批准 Top N）的提示搬到这里，
-  // 只提示 + 跳「待审批」格；批准动作已变成待审批格的「≥70有邮箱→一键全批准」（同一 HIGH_SCORE_READY_WHERE）
-  const highReady = (await db.prepare(
-    `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id = l.id WHERE ${HIGH_SCORE_READY_WHERE}`
-  ).first<{ n: number }>())?.n || 0;
   const rate = (x: number) => (sentLeads > 0 ? x / sentLeads : 0);
   // 累计漏斗（同 #43 口径）求最狠掉点
   const wonC = F("won"), replyC = F("replied") + wonC;
@@ -193,19 +198,20 @@ async function buildActionSuggestions(env: Env): Promise<{
   const bounceRate = rate(bounced), unsubRate = rate(unsub);
   const acts: { text: string; cta: { label: string; action: string } | null; pri: number }[] = [];
   if (replied > 0) acts.push({ pri: 100, text: `${replied} 条回复待跟进`, cta: { label: "去回复箱", action: "replies" } });
-  if (readyCount > 20) acts.push({ pri: 90, text: `${readyCount} 家待发送，今天群发`, cta: { label: "群发开发信", action: "send" } });
-  if (highNoSend > 0) acts.push({ pri: 80, text: `还有 ${highNoSend} 家高分（≥80）没发开发信`, cta: { label: "去待发送", action: "group:ready" } });
-  // D：原绿横幅的提示（≥70·有邮箱·未压制 可批准）——只提示+跳待审批，动作在那一格里
-  if (highReady > 0) acts.push({ pri: 78, text: `🎯 ${highReady} 家高分可批准（≥70分 · 有邮箱 · 未压制）`, cta: { label: "去待审批", action: "group:review" } });
+  // ⭐ 两档制删掉的三张卡（它们都在喊 Joe 去干机器的活，违反"能批量化的 AI 做"）：
+  //  · 「N 家待发送，今天群发」/「≥80 没发开发信」→ ≥60 有邮箱现在**自动发**。没发出去只会是
+  //    每日上限（设计如此）或熔断（有自己的横幅+告警卡）——都不需要 Joe 去点群发。
+  //  · 「≥70 家高分可批准」→ 自动批准干了。
+  // 留下的 highNoEmail：≥60 无邮箱＝机器碰不到，只能 Joe 手动触达 → 真人工活（C/D 的工作台队列）。
   if (reviewCount > 0) acts.push({ pri: 76, text: `${reviewCount} 家已打分待审批`, cta: { label: "去审核", action: "group:review" } });
-  if (highNoEmail > 0) acts.push({ pri: 70, text: `${highNoEmail} 家高分还没邮箱`, cta: { label: "去补邮箱", action: "findmail" } });
+  if (highNoEmail > 0) acts.push({ pri: 70, text: `${highNoEmail} 家 ≥${APPROVE_MIN_SCORE} 分没邮箱，机器发不了`, cta: { label: "去补邮箱", action: "findmail" } });
   if (bounceRate > 0.03) acts.push({ pri: 60, text: `退信率 ${(bounceRate * 100).toFixed(1)}% 偏高，邮箱质量差，建议收紧补邮箱来源`, cta: { label: "看退信/黑名单", action: "group:blacklisted" } });
   if (unsubRate > 0.05) acts.push({ pri: 50, text: `退订率 ${(unsubRate * 100).toFixed(1)}% 偏高，检查发信频率/相关性`, cta: null });
   if (worstJump && worstJump.conv < 50) acts.push({ pri: 40, text: `『${worstJump.from}→${worstJump.to}』转化仅 ${worstJump.conv}%，建议优化开发信/跟进`, cta: null });
   if (sentLeads >= 10 && replied === 0) acts.push({ pri: 30, text: `已发 ${sentLeads} 封暂无回复，主题待优化或量还小`, cta: null });
   acts.sort((a, b) => b.pri - a.pri);
   const actions = acts.slice(0, 4).map(({ pri, ...rest }) => rest);
-  return { actions, highNoEmail, highNoSend, readyCount, reviewCount };
+  return { actions, highNoEmail, readyCount, reviewCount };
 }
 
 // ---- 数据看板：获客漏斗 + 关键指标聚合（走鉴权，非公开）----
@@ -279,14 +285,16 @@ app.get("/api/dashboard", async (c) => {
   }
 
   // 5) 评分分桶 + 缺邮箱 + 已分析数
+  // ⭐ 两档制：原 5 档直方图（b0/b40/b60/b70/b80）删除 —— 前端只读了 b80 一个（其余 4 个是死查询），
+  //    而「高分线索(≥80)」这个 KPI 在自动通道下没有意义：它只会随着找到的线索变多而变大，
+  //    既不是健康度也不对应任何动作（机器已经把信发出去了）。
+  //    换成**翻牌堆待复核**：机器扔掉、Joe 还没看过的家数 —— 这是唯一映射到"还剩多少你的活"的数。
   const buckets = await db.prepare(
     `SELECT
-       SUM(CASE WHEN match_score>=0  AND match_score<40  THEN 1 ELSE 0 END) AS b0,
-       SUM(CASE WHEN match_score>=40 AND match_score<60  THEN 1 ELSE 0 END) AS b40,
-       SUM(CASE WHEN match_score>=60 AND match_score<70  THEN 1 ELSE 0 END) AS b60,
-       SUM(CASE WHEN match_score>=70 AND match_score<80  THEN 1 ELSE 0 END) AS b70,
-       SUM(CASE WHEN match_score>=80 AND match_score<=100 THEN 1 ELSE 0 END) AS b80
-     FROM lead_analysis WHERE match_score IS NOT NULL`
+       SUM(CASE WHEN a.match_score >= ${APPROVE_MIN_SCORE} THEN 1 ELSE 0 END) AS bAuto,
+       SUM(CASE WHEN a.match_score IS NOT NULL AND a.match_score < ${APPROVE_MIN_SCORE}
+                 AND l.status IN ('analyzed','pending') THEN 1 ELSE 0 END) AS bFlipPending
+     FROM lead_analysis a JOIN leads l ON l.id = a.lead_id`
   ).first<any>();
   const noEmailRow = await db.prepare("SELECT COUNT(*) AS n FROM leads WHERE email IS NULL OR email=''").first<{ n: number }>();
   const analyzedRow = await db.prepare("SELECT COUNT(*) AS n FROM lead_analysis WHERE match_score IS NOT NULL").first<{ n: number }>();
@@ -324,7 +332,7 @@ app.get("/api/dashboard", async (c) => {
     funnel,
     funnelLevels,   // #43 累计口径漏斗（前端直接渲染）
     actions: sug.actions,                                              // #47 行动建议（已按紧急度排序，最多 4 条）
-    highNoEmail: sug.highNoEmail, highNoSend: sug.highNoSend,          // #47 指标（备用）
+    highNoEmail: sug.highNoEmail,                                      // #47 指标（备用）
     readyCount: sug.readyCount, reviewCount: sug.reviewCount,
     emailsSent,
     sentLeads,
@@ -335,8 +343,9 @@ app.get("/api/dashboard", async (c) => {
     byInbox,        // 批④：按收件箱类型切片（受 n<50 样本量锁）
     daily,
     scoreBuckets: {
-      b0: buckets?.b0 || 0, b40: buckets?.b40 || 0, b60: buckets?.b60 || 0,
-      b70: buckets?.b70 || 0, b80: buckets?.b80 || 0,
+      bAuto: buckets?.bAuto || 0,                 // ≥60：机器的自动通道
+      bFlipPending: buckets?.bFlipPending || 0,   // <60 且还没被人工处理 = 翻牌堆待复核
+      min: APPROVE_MIN_SCORE,
     },
     noEmailCount: noEmailRow?.n || 0,
     analyzedCount: analyzedRow?.n || 0,
@@ -402,6 +411,10 @@ app.get("/api/leads", async (c) => {
   // 评分区间筛选（分桶）：scoreMin 含、scoreMax 不含；NULL 分数自然被排除
   if (Number.isFinite(scoreMin)) { where.push("a.match_score >= ?"); binds.push(scoreMin); }
   if (Number.isFinite(scoreMax)) { where.push("a.match_score < ?"); binds.push(scoreMax); }
+  // 「未打分」是特殊态，不是区间：分数区间表达不了 IS NULL。
+  // 这批人现在有真实来源了——抓站失败归档的「官网抓不到·无法判断」就是 match_score NULL，
+  // 它们既不在自动通道也不在翻牌堆，必须能单独捞出来看。
+  if ((c.req.query("scored") || "") === "no") where.push("a.match_score IS NULL");
   if (due) where.push("(l.next_action_date IS NOT NULL AND l.next_action_date != '' AND date(l.next_action_date) <= date('now') AND l.status NOT IN ('unsubscribed','blacklisted','bounced','won','ignored'))");
   // B：阶段筛选（与前端 stageOf 派生一致；映射到 SQL）
   const ENGAGED = "EXISTS (SELECT 1 FROM emails e WHERE e.lead_id=l.id AND (e.opened_at IS NOT NULL OR e.clicked_at IS NOT NULL))";
@@ -454,12 +467,14 @@ app.get("/api/leads/facets", async (c) => {
   ).first<{ n: number }>();
   const totalRow = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first<{ n: number }>();
   // 评分分桶计数（边界统一：0-40含0不含40 / 40-70含40不含70 / 70-100含70含100，不重叠不漏）
+  // ⭐ 两档制：0-40 / 40-70 / 70-100 老三档已删 —— 40 和 70 这两条线不对应任何决策。
+  //    现在只有 60 一条线：≥60 走自动通道、<60 进翻牌堆、未打分是特殊态（多为官网抓不到）。
   const sb = await c.env.DB.prepare(
     `SELECT
-       SUM(CASE WHEN match_score>=0  AND match_score<40  THEN 1 ELSE 0 END) AS b0_40,
-       SUM(CASE WHEN match_score>=40 AND match_score<70  THEN 1 ELSE 0 END) AS b40_70,
-       SUM(CASE WHEN match_score>=70 AND match_score<=100 THEN 1 ELSE 0 END) AS b70_100
-     FROM lead_analysis WHERE match_score IS NOT NULL`
+       SUM(CASE WHEN match_score >= ${APPROVE_MIN_SCORE} THEN 1 ELSE 0 END) AS bAuto,
+       SUM(CASE WHEN match_score IS NOT NULL AND match_score < ${APPROVE_MIN_SCORE} THEN 1 ELSE 0 END) AS bFlip,
+       SUM(CASE WHEN match_score IS NULL THEN 1 ELSE 0 END) AS bNone
+     FROM lead_analysis`
   ).first<any>();
   return c.json({
     countries: countries.results,
@@ -468,14 +483,16 @@ app.get("/api/leads/facets", async (c) => {
     noEmailCount: noEmail?.n || 0,
     withEmailCount: withEmail?.n || 0,
     total: totalRow?.n || 0,
-    scoreBuckets: { b0_40: sb?.b0_40 || 0, b40_70: sb?.b40_70 || 0, b70_100: sb?.b70_100 || 0 },
+    scoreBuckets: { bAuto: sb?.bAuto || 0, bFlip: sb?.bFlip || 0, bNone: sb?.bNone || 0, min: APPROVE_MIN_SCORE },
   });
 });
 
-// ---- A3 高分待发：数量 + 批量批准 Top N（≥70分·已打分·有邮箱·未压制；不自动发信）----
+// ---- A3 高分待发：数量 + 批量批准 Top N（≥门槛·已打分·有邮箱·未压制；不自动发信）----
 // 未压制 = status∈(analyzed,pending)(已排除各终态) 且 邮箱不在持久压制名单。
+// ⭐ 两档制：门槛对齐到 APPROVE_MIN_SCORE(60)，不再私设 70 —— 全系统只有 60 这一条决策线。
+//    自动批准开着时这批本来就会被自动收走；这个按钮是自动批准关掉时的手动入口，口径必须一致。
 const HIGH_SCORE_READY_WHERE =
-  "a.match_score >= 70 AND l.status IN ('analyzed','pending') AND l.email IS NOT NULL AND l.email != '' " +
+  `a.match_score >= ${APPROVE_MIN_SCORE} AND l.status IN ('analyzed','pending') AND l.email IS NOT NULL AND l.email != '' ` +
   "AND lower(l.email) NOT IN (SELECT email FROM suppressed_emails)";
 app.get("/api/high-score-ready", async (c) => {
   const row = await c.env.DB.prepare(
@@ -684,10 +701,9 @@ app.get("/api/leads/:id/timeline", async (c) => {
   return c.json({ events });
 });
 
-// ---- 冲刺1a：今日待办作战台（聚合 该跟进 / 未处理热回复 / 今日参与 / 新高分）----
+// ---- 冲刺1a：今日待办作战台（聚合 该跟进 / 未处理热回复 / 今日参与）----
 app.get("/api/today", async (c) => {
   const db = c.env.DB;
-  const hsMin = Number(await getSetting(c.env, "notify_high_score_min", "80")) || 80;
   // ① 今天该跟进（next_action_date 已到，排除已成交/忽略/压制态）
   const dueFollowups = (await db.prepare(
     "SELECT l.id, l.company_name, l.website, l.next_action, l.next_action_date FROM leads l " +
@@ -706,12 +722,8 @@ app.get("/api/today", async (c) => {
     "EXISTS (SELECT 1 FROM emails e WHERE e.lead_id = l.id AND e.clicked_at IS NOT NULL) AS has_click " +
     "FROM leads l WHERE l.last_engaged_at IS NOT NULL AND date(l.last_engaged_at) = date('now') ORDER BY l.last_engaged_at DESC LIMIT 50"
   ).all()).results;
-  // ④ 新高分线索（≥阈值，仍待处理）
-  const highScore = (await db.prepare(
-    "SELECT l.id, l.company_name, l.website, a.match_score, a.customer_category FROM leads l " +
-    "JOIN lead_analysis a ON a.lead_id = l.id WHERE a.match_score >= ? AND l.status IN ('new','analyzed','pending') " +
-    "ORDER BY a.match_score DESC, l.id DESC LIMIT 50"
-  ).bind(hsMin).all()).results;
+  // ④「新高分线索」查询已删（两档制）：批④-1 早就把前端那个列表删了、没人读它 = 死查询；
+  //    而且自动通道时代"新出现一家 85 分"没有动作含义 —— 发生的事就是机器已经把信发出去了。
   const sug = await buildActionSuggestions(c.env);   // #47 今日待办顶部「现在就能推进」复用同一引擎
   // 批④ 待办事项=分诊台：这里只给"每类还剩几件"的真实计数，页面按紧急度排、0 的不显示、只跳转不做动作。
   // ⭐「X 家能发」必须是真能发的口径 = approved 且 有邮箱 且 ≥60分（与 sendApprovedBatch 的取批条件一致）。
@@ -724,7 +736,7 @@ app.get("/api/today", async (c) => {
   ).first<{ n: number }>())?.n || 0;
   const serper = await getSerperUsage(c.env);
   return c.json({
-    dueFollowups, hotReplies, engagedToday, highScore, highScoreMin: hsMin, actions: sug.actions,
+    dueFollowups, hotReplies, engagedToday, actions: sug.actions,
     sendable,                       // 批④：真能发的家数（approved+有邮箱+≥60+未压制）
     reviewCount: sug.reviewCount,   // 待审批
     serper,                         // ⚠️系统警报：Serper 预算
@@ -985,7 +997,7 @@ app.get("/api/settings/sending", async (c) => {
     auto_approve_enabled: (await getSetting(c.env, "auto_approve_enabled", "1")) === "1",
     auto_send_enabled: (await getSetting(c.env, "auto_send_enabled", "1")) === "1",
     auto_send_daily_limit: Number(await getSetting(c.env, "auto_send_daily_limit", "15")) || 15,
-    auto_approve_min: AUTO_APPROVE_MIN,
+    auto_approve_min: await getAutoApproveMin(c.env),
     auto_sent_today: await autoSentToday(c.env),
     breaker: {
       window: br.window, unsubs: br.unsubs,
@@ -999,9 +1011,11 @@ app.get("/api/settings/sending", async (c) => {
   });
 });
 app.post("/api/settings/sending", async (c) => {
-  const b = await c.req.json<{ daily_send_limit?: number; company_name?: string; company_address?: string; company_website?: string; selling_points?: string; chat_script?: string; auto_approve_enabled?: boolean; auto_send_enabled?: boolean; auto_send_daily_limit?: number }>().catch(() => ({}));
+  const b = await c.req.json<{ daily_send_limit?: number; company_name?: string; company_address?: string; company_website?: string; selling_points?: string; chat_script?: string; auto_approve_enabled?: boolean; auto_send_enabled?: boolean; auto_send_daily_limit?: number; auto_approve_min?: number }>().catch(() => ({}));
   if (b.daily_send_limit != null) await setSetting(c.env, "daily_send_limit", String(Math.max(1, Math.min(500, Number(b.daily_send_limit) || 15))));
   if (b.auto_approve_enabled != null) await setSetting(c.env, "auto_approve_enabled", b.auto_approve_enabled ? "1" : "0");
+  // 下限钉死在 APPROVE_MIN_SCORE：设更低也不生效（approveGateReason 照样拦），不给"设了却没用"的假象
+  if (b.auto_approve_min != null) await setSetting(c.env, "auto_approve_min", String(Math.max(APPROVE_MIN_SCORE, Math.min(100, Number(b.auto_approve_min) || AUTO_APPROVE_MIN_DEFAULT))));
   if (b.auto_send_daily_limit != null) await setSetting(c.env, "auto_send_daily_limit", String(Math.max(1, Math.min(200, Number(b.auto_send_daily_limit) || 15))));
   if (b.auto_send_enabled != null) {
     const was = (await getSetting(c.env, "auto_send_enabled", "1")) === "1";
@@ -1219,17 +1233,17 @@ app.get("/api/hunter/status", async (c) => {
 
 // ---- 飞书通知设置 ----
 app.get("/api/settings/notify", async (c) => {
+  // notify_high_score_min 已删（两档制）：它只喂简报的「高分客户」清单，而那个清单已经删了 ——
+  // 自动通道下"新出现一家 85 分"＝机器已经把信发出去了，列给 Joe 看没有动作含义。
   return c.json({
     configured: larkConfigured(c.env),        // 是否已配 webhook（secret 存在与否）
     hasSecret: !!c.env.LARK_WEBHOOK_SECRET,
     enabled: (await getSetting(c.env, "notify_enabled", "1")) !== "0",
-    highScoreMin: Number(await getSetting(c.env, "notify_high_score_min", "80")) || 80,
   });
 });
 app.post("/api/settings/notify", async (c) => {
-  const b = await c.req.json<{ enabled?: boolean; highScoreMin?: number }>().catch(() => ({}));
+  const b = await c.req.json<{ enabled?: boolean }>().catch(() => ({}));
   if (b.enabled != null) await setSetting(c.env, "notify_enabled", b.enabled ? "1" : "0");
-  if (b.highScoreMin != null) await setSetting(c.env, "notify_high_score_min", String(Math.max(0, Math.min(100, Number(b.highScoreMin) || 80))));
   return c.json({ ok: true });
 });
 // ---- 飞书通知：发测试卡片 ----
@@ -1375,9 +1389,6 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 // Cron 定时任务：自动找客户 + 自动分析新线索（7×24 运行）
 async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
   let inserted = 0, analyzed = 0, replies = 0, autoApproved = 0, autoSent = 0;
-  const highScore: { company: string; score: number; category?: string }[] = [];
-  let hsMin = 80;
-  try { hsMin = Number(await getSetting(env, "notify_high_score_min", "80")) || 80; } catch (e) { console.error("hsMin:", e); }
 
   // 1) 搜索找新客户（每关键词 5 条，控制用量）—— #S1 受 discovery_enabled 开关控制（默认关，防 cron 每 6h 全量烧 Serper 积分）
   try {
@@ -1423,10 +1434,6 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
         const out = await analyzeLead(env, lead);
         if (out.ok) {
           analyzed++; okThisBatch++;
-          if ((out.score ?? 0) >= hsMin) {
-            const a = await env.DB.prepare("SELECT customer_category FROM lead_analysis WHERE lead_id=?").bind(lead.id).first<{ customer_category: string }>();
-            highScore.push({ company: lead.company_name || lead.website || `#${lead.id}`, score: out.score!, category: a?.customer_category });
-          }
         } else if (out.fetchFailed) {
           // 抓不到是**这个站**的问题（限流/挂了/拦 UA），不是模型挂了 → 跳过继续，别拖累整轮
           fetchSkipped++;
@@ -1442,18 +1449,18 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   }
   if (fetchSkipped) console.log(`analyze: ${fetchSkipped} 条因官网抓不到跳过（未打分，等下轮重试）`);
 
-  // 2.5) 自动批准：≥70 且有邮箱 → approved（Joe 拍板）。人工闸从此只管 60-69 的模糊地带。
-  //  · **走 approveGateReason 那条既有护栏**，不另开判断口子 —— 它已经管着"有邮箱+已打分+≥60"，
-  //    这里只是把门槛从 60 提到 70（AUTO_APPROVE_MIN），护栏本身一个字没动。
-  //  · 60-69 → 留 analyzed 等人工。
-  //  · <60 → **不动**：Joe 用「<60 一键全忽略」自己清，我们不替他做销毁性决定。
+  // 2.5) 自动批准：≥auto_approve_min（默认 60）且有邮箱 → approved。
+  //  · 两档制：60 是唯一决策线，≥60 走自动通道、<60 进翻牌堆由 Joe 复核。60-69 拍板区已取消。
+  //  · **走 approveGateReason 那条既有护栏**，不另开判断口子 —— 它管着"有邮箱+已打分+≥60"。
+  //  · <60 → **不动**：进翻牌堆等 Joe 复核，绝不替他做销毁性决定。
   try {
     if ((await getSetting(env, "auto_approve_enabled", "1")) === "1") {
+      const autoMin = await getAutoApproveMin(env);
       const cands = (await env.DB.prepare(
         `SELECT l.id, l.email, a.match_score FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
           WHERE l.status='analyzed' AND a.match_score >= ? AND l.email IS NOT NULL AND l.email != ''
           ORDER BY a.match_score DESC, l.id ASC LIMIT 50`
-      ).bind(AUTO_APPROVE_MIN).all()).results as any[];
+      ).bind(autoMin).all()).results as any[];
       for (const c of cands) {
         // 同一条护栏：任何一项不过（缺邮箱/未打分/<60）都不批准，理由照打
         const why = approveGateReason(c.email, c.match_score ?? null);
@@ -1463,7 +1470,7 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
         ).bind(c.id).run();
         if (r.meta.changes === 1) autoApproved++;
       }
-      if (autoApproved) console.log(`auto-approve: ${autoApproved} 条 ≥${AUTO_APPROVE_MIN}分有邮箱 → 待发送`);
+      if (autoApproved) console.log(`auto-approve: ${autoApproved} 条 ≥${autoMin}分有邮箱 → 待发送`);
     } else console.log("auto-approve skipped: auto_approve_enabled=0");
   } catch (e) { console.error("auto-approve:", e); }
 
@@ -1513,9 +1520,18 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   try { await env.DB.prepare("DELETE FROM inbound_throttle WHERE last_at < datetime('now','-1 day')").run(); } catch (e) { console.error("throttle-cleanup:", e); }
 
   // 4) 6 小时简报推飞书（配了 webhook + 未关闭 + 本轮有动静才推）
+  //    两档制：简报报"机器干了什么"（自动批准/自动发信）+"有没有需要你的事"（翻牌堆积压），
+  //    不再列「高分客户」——那个清单在自动通道下没有动作含义。
   try {
-    if (larkConfigured(env) && (await getSetting(env, "notify_enabled", "1")) !== "0" && (inserted || analyzed || replies)) {
-      await larkSend(env, digestCard({ inserted, analyzed, highScore, replies, appUrl: env.ADMIN_URL || env.APP_URL }));
+    if (larkConfigured(env) && (await getSetting(env, "notify_enabled", "1")) !== "0" && (inserted || analyzed || replies || autoApproved || autoSent)) {
+      let needYou = 0;
+      try {
+        needYou = (await env.DB.prepare(
+          `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
+            WHERE l.status IN ('analyzed','pending') AND a.match_score IS NOT NULL AND a.match_score < ${APPROVE_MIN_SCORE}`
+        ).first<{ n: number }>())?.n || 0;
+      } catch (e) { console.error("digest-needyou:", e); }
+      await larkSend(env, digestCard({ inserted, analyzed, replies, autoApproved, autoSent, needYou, appUrl: env.ADMIN_URL || env.APP_URL }));
     }
   } catch (e) { console.error("digest:", e); }
 }
