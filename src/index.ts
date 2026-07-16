@@ -5,7 +5,7 @@ import { parseCsv, mapRowToLead } from "./csv";
 import { analyzeLead, getProfile, DEFAULT_PROFILE, ensureDraft } from "./service";
 import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese, isTrustedDirectorySource } from "./openrouter";
 import { scrapeSite } from "./scrape";
-import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed, autoSentToday, getBreakerStatus, BREAKER_WINDOW, BREAKER_THRESHOLD } from "./send";
+import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed, autoSentToday, sentToday, getBreakerStatus, BREAKER_WINDOW, BREAKER_THRESHOLD } from "./send";
 import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
 import { findLeadEmail } from "./findemail";
 import { ingestReplies, matchReplyToLead } from "./replies";
@@ -1158,6 +1158,8 @@ app.get("/api/settings/sending", async (c) => {
     auto_send_daily_limit: Number(await getSetting(c.env, "auto_send_daily_limit", "15")) || 15,
     auto_approve_min: await getAutoApproveMin(c.env),
     auto_sent_today: await autoSentToday(c.env),
+    // 批⑩B：发送确认弹窗要说清"今日上限还剩几封"。复用本端点加一个字段，不新开端点。
+    sent_today: await sentToday(c.env),
     breaker: {
       window: br.window, unsubs: br.unsubs,
       rate: Math.round(br.rate * 1000) / 10,          // 百分数，一位小数

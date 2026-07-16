@@ -238,6 +238,11 @@
     .dp-bottom .dp-label { font-size:11px; color:var(--muted); margin-right:2px; align-self:center; }
     @media(max-width:820px){ .dp-body { grid-template-columns:1fr; } }
     /* 整页视图共用头 */
+    /* 批⑩A 设置整页：原来这些内容长在 .modal 里，靠它给宽度/内边距/滚动。弹层删了之后
+       得有人接住这份排版职责，否则表单会摊平到整个主区宽度（输入框拉成一米长，更难用）。
+       宽度比 .modal 的 680 宽一档 —— 整页的意义就是给它更多呼吸空间，但不能宽到没边。 */
+    .set-page { max-width:820px; }
+    .set-page h2 { margin:0 0 6px; font-size:17px; }
     .pg-head { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
     .pg-titlewrap { display:flex; flex-direction:column; line-height:1.25; }
     .pg-title { font-size:17px; font-weight:700; }
@@ -448,7 +453,7 @@
   <header>
     <!-- 批③顶栏收口：顶栏 = logo + 搜索，右侧空。
          所有动作都回到它所属的阶段页；设置移到左栏底部。
-         群发→待发送页「全部发送」；回复箱→已回复页；批量分析→待分析页；批量找邮箱/Hunter→待审批页；导入CSV→找客户页。 -->
+         群发→待发送页「发送选中」（批⑩B：全部发送已删，要发全部点表头全选框）；回复箱→已回复页；批量分析→待分析页；批量找邮箱/Hunter→待审批页；导入CSV→找客户页。 -->
     <div class="hdr-left"><img src="https://tejoy.com/static/tejoy-logo-white.png" alt="TEJOY" title="回待办事项首页" onclick="openToday()" style="height:22px;width:auto;display:block"></div>
     <div class="hdr-right-zone">
       <input type="search" id="q" placeholder="搜索公司 / 邮箱 / 域名…" />
@@ -462,15 +467,11 @@
     <!-- 批③顶栏收口：左栏 = 导航+漏斗（#side 由 loadStats 渲染，flex:1 撑开）→ 底部⚙设置 -->
     <nav class="side">
       <div id="side" style="flex:1;min-height:0"></div>
-      <div class="settings-menu side-settings">
-        <button id="btn-settings" class="gear-btn">⚙ 设置 ▾</button>
-        <!-- 在左栏底部，菜单向上弹 -->
-        <div class="dd-menu dd-up" id="settings-dd">
-          <button id="btn-sendcfg" class="dd-item">发信设置</button>
-          <button id="btn-notify" class="dd-item">🔔 飞书通知</button>
-          <div class="dd-sep"></div>
-          <div class="dd-static" id="whoami"></div>
-        </div>
+      <!-- 批⑩A：下拉二选一已删 —— 「⚙ 设置」直接进整页。
+           原来点它要先在「发信设置 / 飞书通知」里选一个，可那是**我们的**分法不是 Joe 的：
+           他只想"去设置里改点东西"。而且弹窗撑不下这些内容，他已经在里面滚动了。 -->
+      <div class="side-settings">
+        <button id="btn-settings" class="gear-btn">⚙ 设置</button>
       </div>
     </nav>
     <div class="main">
@@ -505,6 +506,89 @@
       <div class="empty" id="empty" style="display:none">暂无数据。去左栏「🎯 找客户」加线索——免费目录源（零成本）／导入 CSV（自有名单）／关键词搜索。</div>
       </div>
       <div id="v-page" style="display:none"></div>
+  <!-- ⚙ 设置整页（批⑩A：原「发信设置」+「飞书通知」两个弹层合并而来） -->
+  <!-- ⚠️ 元素 id 全部原样保留 → 既有的读取/保存逻辑一行没改，行为不变。这是刻意的：
+       这一页管着 Joe 的发信旋钮和自动化开关，改版不该顺手动语义。
+       分区顺序按重要性：自动化 → 发信参数 → 话术 → 无回复自动跟进 → 飞书通知 → 当前账号。 -->
+  <div id="v-settings" style="display:none">
+    <div class="pg-head">
+      <button class="btn-ghost" onclick="showMainView('list')">← 返回列表</button>
+      <div class="pg-titlewrap"><span class="pg-title">⚙ 设置</span><span class="pg-sub">自动化开关 · 发信参数 · 话术 · 跟进 · 通知</span></div>
+    </div>
+    <div class="set-page">
+      <p class="hint">养域期建议每日上限从 10–20 起步，逐周提高。公司地址是冷邮件合规（CAN-SPAM）要求，会出现在每封信页脚，请填真实地址。</p>
+<!-- 熔断横幅：只在熔断时出现，必须显眼 —— 自动发送停了而 Joe 不知道，比不停还糟 -->
+      <div id="brk-banner" class="brk-banner" style="display:none"></div>
+
+      <!-- 自动化（两档制）：≥60 有邮箱 → 机器自动批准+自动发；<60 → 进翻牌堆等 Joe 复核 -->
+      <div class="auto-box">
+        <div class="auto-title">🤖 自动化</div>
+        <label class="auto-row"><input type="checkbox" id="cfg-auto-approve">
+          <span><b>自动批准</b> <span class="hint">≥<span id="cfg-auto-min">70</span> 分且有邮箱 → 直接进「待发送」；60–69 分仍留给你人工审</span></span></label>
+        <label class="auto-row"><input type="checkbox" id="cfg-auto-send">
+          <span><b>自动发送</b> <span class="hint">后台每 6h 自动发已批准的；退订率过高会自动熔断</span></span></label>
+        <div class="auto-row" style="padding-left:24px">
+          <span class="hint">自动发送每日上限</span>
+          <input id="cfg-auto-limit" type="number" min="1" max="200" style="width:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:6px;margin-left:8px">
+          <span class="hint" id="cfg-auto-used" style="margin-left:8px"></span>
+        </div>
+        <div class="auto-row" style="padding-left:24px"><span class="hint" id="cfg-brk-stat"></span></div>
+      </div>
+
+      <div class="kv" style="grid-template-columns:110px 1fr">
+        <div class="k">每日发信上限</div><div><input id="cfg-limit" type="number" min="1" max="500" style="width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"><span class="hint" style="margin-left:8px">手动+自动+跟进 全部共用这个总闸</span></div>
+        <div class="k">公司名</div><div><input id="cfg-company" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
+        <div class="k">官网</div><div><input id="cfg-website" placeholder="https://tejoy.com" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
+      </div>
+      <p class="hint" style="margin:2px 0 0">官网会出现在每封开发信页脚(如 tejoy.com),让收信人知道你们的正式网站。发件域名仍是 tejoy.net 不变。</p>
+      <div class="k muted">公司地址（合规必填）</div>
+      <textarea id="cfg-address" style="min-height:60px" placeholder="e.g. TEJOY, 123 Example St, City, Country"></textarea>
+
+      <div class="sec-title">⭐ 卖点 / 社会证明</div>
+      <p class="hint" style="margin:0 0 4px">AI 写开发信/跟进/回复时可引用的可信卖点（英文更佳，别夸大、别点名具体客户）。留空用内置默认。</p>
+      <textarea id="cfg-selling" style="min-height:70px" placeholder="e.g. Supplier behind many top-selling Amazon Starlink accessory listings; trusted by 100+ resellers; dropship-friendly wholesale pricing."></textarea>
+
+      <div class="sec-title">💬 一键开聊话术</div>
+      <p class="hint" style="margin:0 0 4px">详情弹层「一键开聊」按钮预填/复制的开场白（英文，用 {company} 占位公司名）。</p>
+      <textarea id="cfg-chatscript" style="min-height:64px" placeholder="Hi {company} team — TEJOY supplies wholesale Starlink accessories…"></textarea>
+
+      <div class="sec-title">🔁 无回复自动跟进</div>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:4px 0">
+        <input type="checkbox" id="fu-enabled"> 开启：发出去 N 天没回复，自动发第 2 封跟进信
+      </label>
+      <div class="kv" style="grid-template-columns:130px 1fr">
+        <div class="k">间隔天数</div><div><input id="fu-delay" type="number" min="1" max="60" class="fld"> <span class="hint">发出后几天没回复就跟进（建议 3-5）</span></div>
+        <div class="k">已参与跟进间隔</div><div><input id="fu-engaged-delay" type="number" min="1" max="60" class="fld"> <span class="hint">点过链接的线索多久跟进（更短更暖，建议 1-2 天）</span></div>
+        <div class="k">最多跟进次数</div><div><input id="fu-max" type="number" min="1" max="5" class="fld"> <span class="hint">每个客户最多跟进几次（建议 1-2）</span></div>
+        <div class="k">没回音归档</div><div><input id="fu-noreply" type="number" min="1" max="90" class="fld"> <span class="hint">跟进发满后再等这么多天还是没回应 → 自动归档（默认 7）。不然这批人会永远堵在「已发送」格里，把真正该看的淹掉</span></div>
+      </div>
+      <p class="hint" style="margin:2px 0 0">跟进信由 AI 生成（简短礼貌），遵守每日发信上限。已回复/退订/退信的自动排除。Cron 每 6 小时自动跑一批。</p>
+
+      
+      <div class="sec-title">🔔 飞书通知</div>
+<p class="hint">在一个飞书群里 <b>群设置 → 群机器人 → 添加「自定义机器人」</b>，把它的 <b>Webhook 地址</b>发给管理员注入后即生效。之后：有客户「有意向/询价/投诉」回复会<b>实时</b>推到群里，每 6 小时来一条<b>简报</b>。</p>
+      <div id="notify-status" class="transparency" style="margin:12px 0"></div>
+      <div class="kv" style="grid-template-columns:130px 1fr">
+        <div class="k">启用通知</div><div><label style="cursor:pointer"><input type="checkbox" id="ntf-enabled"> 打开（关掉则不推任何消息）</label></div>
+      </div>
+      <!-- 「高分阈值」已删（两档制）：它只喂简报里的「高分客户」清单，而那个清单已经删了 ——
+           自动通道下"新出现一家 85 分"＝机器已经把信发出去了，列给你看没有动作可做。
+           简报现在报的是"机器这轮干了什么"（自动批准/自动发信）+ 翻牌堆积压。 -->
+      
+      <div class="sec-title">👤 当前账号</div>
+      <div class="transparency" id="whoami" style="margin:6px 0 0"></div>
+
+      <!-- ⚠️ 保存语义没改：**一个「保存」按钮存全部**（发信设置 + 跟进 + 飞书一起存）。
+           没把任何开关做成"点了立即生效不用保存" —— 那会让 Joe 分不清哪些改动生效了。
+           「发送测试卡片」是**动作**不是设置，所以单独留一个按钮。 -->
+      <div class="actions" style="position:sticky;bottom:0;background:var(--panel);padding:12px 0;border-top:1px solid var(--border);margin-top:18px">
+        <button class="primary" id="save-sendcfg">保存</button>
+        <button class="btn-amber" id="ntf-test">发送测试卡片</button>
+        <span class="hint" id="sendcfg-result"></span>
+        <span class="hint" id="ntf-result"></span>
+      </div>
+    </div>
+  </div>
       <div id="v-found" style="display:none">
         <div class="pg-head"><button class="btn-ghost" onclick="showMainView('list')">← 返回列表</button><div class="pg-titlewrap"><span class="pg-title">🔍 找客户</span><span class="pg-sub">免费目录源优先 · 关键词搜索兜底 · 统一 AI 打分</span></div></div>
 
@@ -624,90 +708,6 @@
 
   <!-- 批③追加2：回复箱弹层已删 —— 已并入「已回复」格页面（每行=线索+最新回复摘要+AI分类徽章；
        起草回复/拉取新回复 在该页工具栏；完整往来看线索详情时间线）。顺带结掉 #37 回复箱 UX 重设计。 -->
-
-  <!-- 发信设置弹层 -->
-  <div class="overlay" id="sendcfg-overlay">
-    <div class="modal">
-      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
-      <h2>发信设置</h2>
-      <p class="hint">养域期建议每日上限从 10–20 起步，逐周提高。公司地址是冷邮件合规（CAN-SPAM）要求，会出现在每封信页脚，请填真实地址。</p>
-
-      <!-- 熔断横幅：只在熔断时出现，必须显眼 —— 自动发送停了而 Joe 不知道，比不停还糟 -->
-      <div id="brk-banner" class="brk-banner" style="display:none"></div>
-
-      <!-- 自动化（两档制）：≥60 有邮箱 → 机器自动批准+自动发；<60 → 进翻牌堆等 Joe 复核 -->
-      <div class="auto-box">
-        <div class="auto-title">🤖 自动化</div>
-        <label class="auto-row"><input type="checkbox" id="cfg-auto-approve">
-          <span><b>自动批准</b> <span class="hint">≥<span id="cfg-auto-min">70</span> 分且有邮箱 → 直接进「待发送」；60–69 分仍留给你人工审</span></span></label>
-        <label class="auto-row"><input type="checkbox" id="cfg-auto-send">
-          <span><b>自动发送</b> <span class="hint">后台每 6h 自动发已批准的；退订率过高会自动熔断</span></span></label>
-        <div class="auto-row" style="padding-left:24px">
-          <span class="hint">自动发送每日上限</span>
-          <input id="cfg-auto-limit" type="number" min="1" max="200" style="width:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:6px;margin-left:8px">
-          <span class="hint" id="cfg-auto-used" style="margin-left:8px"></span>
-        </div>
-        <div class="auto-row" style="padding-left:24px"><span class="hint" id="cfg-brk-stat"></span></div>
-      </div>
-
-      <div class="kv" style="grid-template-columns:110px 1fr">
-        <div class="k">每日发信上限</div><div><input id="cfg-limit" type="number" min="1" max="500" style="width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"><span class="hint" style="margin-left:8px">手动+自动+跟进 全部共用这个总闸</span></div>
-        <div class="k">公司名</div><div><input id="cfg-company" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
-        <div class="k">官网</div><div><input id="cfg-website" placeholder="https://tejoy.com" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
-      </div>
-      <p class="hint" style="margin:2px 0 0">官网会出现在每封开发信页脚(如 tejoy.com),让收信人知道你们的正式网站。发件域名仍是 tejoy.net 不变。</p>
-      <div class="k muted">公司地址（合规必填）</div>
-      <textarea id="cfg-address" style="min-height:60px" placeholder="e.g. TEJOY, 123 Example St, City, Country"></textarea>
-
-      <div class="sec-title">⭐ 卖点 / 社会证明</div>
-      <p class="hint" style="margin:0 0 4px">AI 写开发信/跟进/回复时可引用的可信卖点（英文更佳，别夸大、别点名具体客户）。留空用内置默认。</p>
-      <textarea id="cfg-selling" style="min-height:70px" placeholder="e.g. Supplier behind many top-selling Amazon Starlink accessory listings; trusted by 100+ resellers; dropship-friendly wholesale pricing."></textarea>
-
-      <div class="sec-title">💬 一键开聊话术</div>
-      <p class="hint" style="margin:0 0 4px">详情弹层「一键开聊」按钮预填/复制的开场白（英文，用 {company} 占位公司名）。</p>
-      <textarea id="cfg-chatscript" style="min-height:64px" placeholder="Hi {company} team — TEJOY supplies wholesale Starlink accessories…"></textarea>
-
-      <div class="sec-title">🔁 无回复自动跟进</div>
-      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:4px 0">
-        <input type="checkbox" id="fu-enabled"> 开启：发出去 N 天没回复，自动发第 2 封跟进信
-      </label>
-      <div class="kv" style="grid-template-columns:130px 1fr">
-        <div class="k">间隔天数</div><div><input id="fu-delay" type="number" min="1" max="60" class="fld"> <span class="hint">发出后几天没回复就跟进（建议 3-5）</span></div>
-        <div class="k">已参与跟进间隔</div><div><input id="fu-engaged-delay" type="number" min="1" max="60" class="fld"> <span class="hint">点过链接的线索多久跟进（更短更暖，建议 1-2 天）</span></div>
-        <div class="k">最多跟进次数</div><div><input id="fu-max" type="number" min="1" max="5" class="fld"> <span class="hint">每个客户最多跟进几次（建议 1-2）</span></div>
-        <div class="k">没回音归档</div><div><input id="fu-noreply" type="number" min="1" max="90" class="fld"> <span class="hint">跟进发满后再等这么多天还是没回应 → 自动归档（默认 7）。不然这批人会永远堵在「已发送」格里，把真正该看的淹掉</span></div>
-      </div>
-      <p class="hint" style="margin:2px 0 0">跟进信由 AI 生成（简短礼貌），遵守每日发信上限。已回复/退订/退信的自动排除。Cron 每 6 小时自动跑一批。</p>
-
-      <div class="actions">
-        <button class="primary" id="save-sendcfg">保存</button>
-        <button id="cancel-sendcfg">取消</button>
-        <span class="hint" id="sendcfg-result"></span>
-      </div>
-    </div>
-  </div>
-
-  <!-- 飞书通知设置弹层 -->
-  <div class="overlay" id="notify-overlay">
-    <div class="modal">
-      <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
-      <h2>🔔 飞书群机器人通知</h2>
-      <p class="hint">在一个飞书群里 <b>群设置 → 群机器人 → 添加「自定义机器人」</b>，把它的 <b>Webhook 地址</b>发给管理员注入后即生效。之后：有客户「有意向/询价/投诉」回复会<b>实时</b>推到群里，每 6 小时来一条<b>简报</b>。</p>
-      <div id="notify-status" class="transparency" style="margin:12px 0"></div>
-      <div class="kv" style="grid-template-columns:130px 1fr">
-        <div class="k">启用通知</div><div><label style="cursor:pointer"><input type="checkbox" id="ntf-enabled"> 打开（关掉则不推任何消息）</label></div>
-      </div>
-      <!-- 「高分阈值」已删（两档制）：它只喂简报里的「高分客户」清单，而那个清单已经删了 ——
-           自动通道下"新出现一家 85 分"＝机器已经把信发出去了，列给你看没有动作可做。
-           简报现在报的是"机器这轮干了什么"（自动批准/自动发信）+ 翻牌堆积压。 -->
-      <div class="actions">
-        <button class="primary" id="ntf-save">保存</button>
-        <button class="btn-amber" id="ntf-test">发送测试卡片</button>
-        <button id="ntf-close">关闭</button>
-        <span class="hint" id="ntf-result"></span>
-      </div>
-    </div>
-  </div>
 
   <!-- 今日待办弹层 -->
   <div class="overlay" id="today-overlay">
@@ -981,10 +981,19 @@
     let sortMode = "";
     // B1 多选状态（存字符串 id）；_loadedIds = 当前已加载行 id，用于"全选当前"
     const selectedIds = new Set(); let _loadedIds = [];
+    let _loadedLeads = [];   // 批⑩B：当前列表的线索对象 —— 发送确认弹窗要按邮箱有无分组，光有 id 算不出来
     window.toggleSel = (id, checked) => { const s=String(id); if(checked) selectedIds.add(s); else selectedIds.delete(s); refreshBulkBar(); syncSelAll(); };
-    window.toggleSelAll = (checked) => { _loadedIds.forEach(id => { if(checked) selectedIds.add(id); else selectedIds.delete(id); }); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=checked); refreshBulkBar(); };
-    window.clearSel = () => { selectedIds.clear(); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=false); const sa=$("#sel-all"); if(sa)sa.checked=false; refreshBulkBar(); };
-    function syncSelAll(){ const sa=$("#sel-all"); if(!sa) return; sa.checked = _loadedIds.length>0 && _loadedIds.every(id=>selectedIds.has(id)); }
+    window.toggleSelAll = (checked) => { _loadedIds.forEach(id => { if(checked) selectedIds.add(id); else selectedIds.delete(id); }); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=checked); refreshBulkBar(); syncSelAll(); };
+    window.clearSel = () => { selectedIds.clear(); document.querySelectorAll(".rowchk").forEach(cb=>cb.checked=false); const sa=$("#sel-all"); if(sa){sa.checked=false; sa.indeterminate=false;} refreshBulkBar(); };
+    // 批⑩C：删了「取消选择」之后，表头这个框就是**唯一**的清空入口 → 它的状态必须读得准。
+    // 半选态用 indeterminate 表达（选了一部分 ≠ 一条没选）。原生 checkbox 的行为正好是我们要的：
+    // 半选/未选时点一下 → checked=true → 全选；全选时点一下 → checked=false → 全不选。
+    function syncSelAll(){
+      const sa=$("#sel-all"); if(!sa) return;
+      const picked = _loadedIds.filter(id=>selectedIds.has(id)).length;
+      sa.checked = _loadedIds.length>0 && picked===_loadedIds.length;
+      sa.indeterminate = picked>0 && picked<_loadedIds.length;
+    }
     // ===== 批③C 分格工具栏：每格 = 这一格的出口动作 =====
     // sel:true = 选中类（未选中时禁用，标题带条数）；否则 = 全量类（对当前格全体，始终可用）
     const GROUP_TOOLS = {
@@ -1000,7 +1009,9 @@
         { t:"忽略选中", cls:"btn-amber", sel:true, fn:"toolStatusSel('ignored','忽略')" },
       ],
       ready: [
-        { t:"全部发送（受每日上限）", cls:"btn-green", fn:"toolSendAll()" },
+        // 批⑩B：「全部发送」已删 —— 要发全部就点表头全选框（跟"取消选择"是同一个手势）。
+        // ⚠️ 按钮名必须保留「选中」二字，不能只叫「发送」：这是**不可撤销**动作，
+        //    名字必须说清对谁生效。"批准≠发送"那次事故就是名字不精准造成的。
         { t:"发送选中", cls:"btn-green", sel:true, fn:"toolSendSel()" },
         { t:"退回待审批", cls:"", sel:true, fn:"toolStatusSel('analyzed','退回待审批')" },
       ],
@@ -1035,7 +1046,8 @@
       bar.style.display = "flex";
       bar.innerHTML = `<span>已选 <b id="bulk-n">${n}</b> 条</span>`
         + defs.map(d=>`<button class="${d.cls} mini"${d.sel&&!n?" disabled title='先勾选线索'":""} onclick="${d.fn}">${esc(d.t)}${d.sel&&n?`（${n}）`:""}</button>`).join("")
-        + (n?`<button class="mini" onclick="clearSel()">取消选择</button>`:"")
+        // 批⑩C：「取消选择」已删（六个格子一起没了）—— 表头那个框本来就是全选/全不选的
+        // toggle，这个按钮纯冗余。删它的前提是表头框的状态得读得准，见 syncSelAll 的 indeterminate。
         + `<span class="hint" id="bulk-msg"></span>`;
     }
     const refreshBulkBar = renderGroupTools;   // 兼容原有调用点
@@ -1116,11 +1128,13 @@
       toolMsg(r.error?("失败: "+esc(r.error)):`✅ 已忽略 ${r.updated} 条${skipSummary(r.skipped)?`，${esc(skipSummary(r.skipped).replace(/^\n/,""))}`:""}`);
       afterMutate();
     };
-    // 待发送：全部发送 / 发送选中（都走 /api/send/batch，≥60门槛+每日上限+幂等+压制不绕）
+    // 待发送/待联系：唯一入口「发送选中」（走 /api/send/batch，≥60门槛+每日上限+幂等+压制一个不绕）
     async function doSend(ids, title, body){
       const cfg = await fetch("/api/settings/sending").then(r=>r.json()).catch(()=>({}));
       const cap = cfg.daily_send_limit || 50;
-      if(!(await uiConfirm({ title, body: body(cap), confirmText:"确认发送", danger:false }))) return;
+      // 批⑩B：剩余额度要真算出来给 Joe 看。sent_today 由 /api/settings/sending 带出（复用端点，没新开）。
+      const left = Math.max(0, cap - (cfg.sent_today || 0));
+      if(!(await uiConfirm({ title, body: body(cap, left), confirmText:"确认发送", danger:false }))) return;
       toolMsg("发送中…（发出不可撤）");
       const payload = ids ? { ids, limit: cap } : { limit: cap };
       const r=await fetch("/api/send/batch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)}).then(r=>r.json()).catch(e=>({error:String(e)}));
@@ -1131,11 +1145,20 @@
       await uiConfirm({ title:`发送完成：${r.sent} 封`, body:`今日已发 ${r.sentToday}/${r.dailyLimit}。${why||""}${r.capReached?"\n⚠️ 已触及每日上限，其余明天再发。":""}`, confirmText:"知道了", cancelText:"关闭" });
       afterMutate();
     }
-    window.toolSendAll = () => doSend(null, "全部发送（受每日上限）",
-      cap => `将发送**全部待发送**线索（高分优先）。\n\n· 受每日上限 **${cap}** 封约束，超出的明天继续\n· <60分／退订／黑名单／已发过的 会自动跳过\n· 发出不可撤（发件 hello@tejoy.net）`);
+    // 批⑩B：唯一的发送按钮。确认弹窗必须把"这一下到底会发几封"算给 Joe 看 ——
+    // 批⑨ 之后「待联系」里会混着只有社媒的线索，"选了 30 条"和"会发 30 封"不再是一回事。
     window.toolSendSel = () => { const ids=[...selectedIds].map(Number); if(!ids.length) return;
-      doSend(ids, `发送选中 ${ids.length} 条`,
-        cap => `将只发送**选中的 ${ids.length} 条**。\n\n· 受每日上限 **${cap}** 封约束\n· 其中 <60分／缺邮箱／退订／黑名单／已发过的 会自动跳过\n· 发出不可撤（发件 hello@tejoy.net）`); };
+      const picked = _loadedLeads.filter(l => selectedIds.has(String(l.id)));
+      const withEmail = picked.filter(l => l.email && String(l.email).trim());
+      const noEmail   = picked.filter(l => !(l.email && String(l.email).trim()));
+      doSend(ids, `发送选中 ${ids.length} 条`, (cap, left) => {
+        const willSend = Math.min(withEmail.length, left);
+        return `选中 **${ids.length}** 条，其中：\n\n`
+          + `· **${withEmail.length} 条有邮箱** → 会发邮件\n`
+          + (noEmail.length ? `· **${noEmail.length} 条只有社媒/无邮箱** → **发不了**，得你点进详情页手动碰\n` : "")
+          + `· 今日上限 ${cap} 封，**还剩 ${left} 封**${withEmail.length>left?`　→ ⚠️ 这次最多发 ${willSend} 封，其余明天继续`:""}\n\n`
+          + `其中 <60分／退订／黑名单／已发过的 还会再跳过一些。\n**发出不可撤**（发件 hello@tejoy.net）`;
+      }); };
     // 已发送/已查看：跟进选中（engaged 的自动用「趁热」暖变体，共用 /api/followup/run）
     window.toolFollowupSel = async (warm) => {
       const ids=[...selectedIds].map(Number); if(!ids.length) return;
@@ -1285,6 +1308,7 @@
       const { leads } = await fetch(`/api/leads?${filterQuery()}`).then(r=>r.json());
       $("#empty").style.display = leads.length ? "none" : "block";
       _loadedIds = leads.map(l => String(l.id));
+      _loadedLeads = leads;
       // 小修：列表每次 reload 后把已选与当前结果集求交集——去掉不在当前筛选/分组可见集里的 id，
       // 让"已选N条"与批量操作永远=当前可见的选中项（无分页，全量加载，交集剪枝安全）。
       { const visible = new Set(_loadedIds); for (const id of [...selectedIds]) if (!visible.has(id)) selectedIds.delete(id); }
@@ -1937,7 +1961,7 @@
     };
 
     // 批③顶栏收口：#btn-send(群发开发信) 已删 —— 它无视当前页、永远发全部 approved，
-    // 正是"筛出35条却发全部"事故的元凶。功能归「待发送」格的「全部发送/发送选中」（后端 sendApprovedBatch 原样复用）。
+    // 正是"筛出35条却发全部"事故的元凶。功能归「待发送」格的「发送选中」（后端 sendApprovedBatch 原样复用）。
 
     // 单条找邮箱（useHunter=false 免费抓官网；true 走 Hunter 花1积分）
     window.findMail = async (id, useHunter=false) => {
@@ -2294,7 +2318,10 @@
     };
 
     // 发信设置
-    $("#btn-sendcfg").onclick = async () => {
+    // 批⑩A：「⚙ 设置」直接进整页（原来要先在下拉里二选一）。
+    // 一次把两块数据都读进来 —— 整页是一个整体，不该出现"上半页是新的、下半页还是旧的"。
+    window.openSettings = async () => {
+      showMainView('settings');
       const c = await fetch("/api/settings/sending").then(r=>r.json());
       $("#cfg-limit").value = c.daily_send_limit;
       $("#cfg-company").value = c.company_name || "";
@@ -2310,8 +2337,9 @@
       $("#fu-max").value = fu.max_followups;
       $("#fu-noreply").value = fu.no_reply_days;
       renderAutomation(c);
-      $("#sendcfg-overlay").classList.add("show");
+      await loadNotifyCfg();          // 飞书那块也一起刷新
     };
+    $("#btn-settings").onclick = () => openSettings();
     // 自动化区 + 熔断状态。熔断了而 Joe 不知道，比不熔断还糟 —— 所以停了必须显眼说清为什么。
     function renderAutomation(c){
       $("#cfg-auto-approve").checked = c.auto_approve_enabled !== false;
@@ -2333,35 +2361,41 @@
           + `自动批准与手动发送不受影响。<b>不会自动恢复</b> —— 请先检查线索来源与开发信内容，确认后勾上「自动发送」再保存。`;
       } else banner.style.display = "none";
     }
-    $("#cancel-sendcfg").onclick = () => $("#sendcfg-overlay").classList.remove("show");
+    // 批⑩A：整页唯一的「保存」—— 三块设置一起存（发信 + 跟进 + 飞书）。
+    // ⚠️ 三个请求各自会失败。**每一段失败都必须说出来** —— 原来 followup 那发是 fire-and-forget
+    //    （没读返回值），存失败了 Joe 也看不见，正是我们一路在修的那种静默病。
     $("#save-sendcfg").onclick = async () => {
-      $("#sendcfg-result").textContent = "保存中…";
-      const res = await fetch("/api/settings/sending", { method:"POST", headers:{"content-type":"application/json"},
+      $("#sendcfg-result").textContent = "保存中…"; $("#ntf-result").textContent = "";
+      const jf = (p) => p.then(r=>r.json()).catch(e=>({error:String(e)}));
+      const res = await jf(fetch("/api/settings/sending", { method:"POST", headers:{"content-type":"application/json"},
         body:JSON.stringify({ daily_send_limit:Number($("#cfg-limit").value), company_name:$("#cfg-company").value, company_address:$("#cfg-address").value, company_website:$("#cfg-website").value, selling_points:$("#cfg-selling").value, chat_script:$("#cfg-chatscript").value,
-          auto_approve_enabled:$("#cfg-auto-approve").checked, auto_send_enabled:$("#cfg-auto-send").checked, auto_send_daily_limit:Number($("#cfg-auto-limit").value) }) }).then(r=>r.json());
-      await fetch("/api/settings/followup", { method:"POST", headers:{"content-type":"application/json"},
-        body:JSON.stringify({ enabled:$("#fu-enabled").checked, delay_days:Number($("#fu-delay").value), engaged_delay_days:Number($("#fu-engaged-delay").value), max_followups:Number($("#fu-max").value), no_reply_days:Number($("#fu-noreply").value) }) });
+          auto_approve_enabled:$("#cfg-auto-approve").checked, auto_send_enabled:$("#cfg-auto-send").checked, auto_send_daily_limit:Number($("#cfg-auto-limit").value) }) }));
+      const fu = await jf(fetch("/api/settings/followup", { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ enabled:$("#fu-enabled").checked, delay_days:Number($("#fu-delay").value), engaged_delay_days:Number($("#fu-engaged-delay").value), max_followups:Number($("#fu-max").value), no_reply_days:Number($("#fu-noreply").value) }) }));
+      const ntf = await saveNotifyCfg();
       if (res.ok) _chatScript = $("#cfg-chatscript").value || DEFAULT_CHAT;
-      $("#sendcfg-result").textContent = res.ok ? "已保存" : ("错误: "+(res.error||""));
+      const bad = [ res.error && `发信设置：${res.error}`, fu.error && `跟进设置：${fu.error}`, ntf.error && `飞书通知：${ntf.error}` ].filter(Boolean);
+      $("#sendcfg-result").innerHTML = bad.length
+        ? `<span style="color:var(--danger,#e5534b)">⚠️ 有 ${bad.length} 段没存上：${esc(bad.join("；"))}</span>`
+        : "✅ 已保存（发信 + 跟进 + 飞书通知）";
+      if (!bad.length) renderAutomation(await fetch("/api/settings/sending").then(r=>r.json()).catch(()=>({})));   // 熔断/已发数回读，别让页面停在旧值
     };
 
     // 飞书通知设置
-    $("#btn-notify").onclick = async () => {
+    async function loadNotifyCfg(){
       const c = await fetch("/api/settings/notify").then(r=>r.json());
       $("#notify-status").innerHTML = c.configured
         ? `✅ 已连接飞书机器人（webhook 已配置${c.hasSecret?"，含签名校验":""}）。可点「发送测试卡片」验证。`
         : `⚠️ 还没配 webhook —— 在飞书群建「自定义机器人」，把 Webhook 地址发给管理员。配好前不会推送。`;
       $("#ntf-enabled").checked = !!c.enabled;
       $("#ntf-result").textContent = "";
-      $("#notify-overlay").classList.add("show");
-    };
-    $("#ntf-close").onclick = () => $("#notify-overlay").classList.remove("show");
-    $("#ntf-save").onclick = async () => {
-      $("#ntf-result").textContent = "保存中…";
-      const res = await fetch("/api/settings/notify", { method:"POST", headers:{"content-type":"application/json"},
-        body:JSON.stringify({ enabled:$("#ntf-enabled").checked }) }).then(r=>r.json());
-      $("#ntf-result").textContent = res.ok ? "已保存" : ("错误: "+(res.error||""));
-    };
+    }
+    // 批⑩A：飞书那个独立「保存」已删 —— 整页只有一个「保存」，它存全部（见 #save-sendcfg）。
+    // 一页两个保存按钮 = Joe 改了两处只点一个，另一处静默丢失。
+    async function saveNotifyCfg(){
+      return await fetch("/api/settings/notify", { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ enabled:$("#ntf-enabled").checked }) }).then(r=>r.json()).catch(e=>({error:String(e)}));
+    }
     $("#ntf-test").onclick = async () => {
       $("#ntf-result").textContent = "发送中…";
       const res = await fetch("/api/notify/test", { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
@@ -2427,10 +2461,12 @@
     // 主内容视图切换：list(线索列表) / today(今日待办整页) / dashboard(数据看板整页)
     window.showMainView = (v) => {
       const list = document.getElementById('v-list'), page = document.getElementById('v-page'), found = document.getElementById('v-found');
+      const settings = document.getElementById('v-settings');   // 批⑩A：设置整页
       if (!list || !page) return;
-      list.style.display='none'; page.style.display='none'; if(found) found.style.display='none';
+      list.style.display='none'; page.style.display='none'; if(found) found.style.display='none'; if(settings) settings.style.display='none';
       if (v === 'list' || v === 'due') { list.style.display=''; page.innerHTML=''; }   // 批③B due=列表视图，但左栏高亮在导航项
       else if (v === 'found') { if(found) found.style.display=''; page.innerHTML=''; }
+      else if (v === 'settings') { if(settings) settings.style.display=''; page.innerHTML=''; }
       else { page.style.display=''; }
       activeView = v;              // #42 记录当前视图
       refreshNavHighlight();       // #42 左栏高亮跟随视图切换
@@ -2577,7 +2613,7 @@
     }
     window.dashAction = (a) => {
       // 批③：顶栏按钮已删 → 一律跳到"动作所属的那一格"，让用户在该格里用它的出口动作（不做隔空动作）
-      if (a==='send'){ gotoGroup('ready'); }            // 群发 → 待发送格（那里有「全部发送/发送选中」）
+      if (a==='send'){ gotoGroup('ready'); }            // 群发 → 待发送格（那里有「发送选中」）
       else if (a==='replies'){ gotoGroup('replied'); }  // 回复箱 → 已回复格
       else if (a==='findmail'){ gotoGroup('review'); }  // 补邮箱 → 待审批格（那里有「缺邮箱→批量补邮箱」）
       else if (a && a.indexOf('group:')===0){ gotoGroup(a.slice(6)); }
@@ -2643,7 +2679,6 @@
         if (!open) dd.classList.add("show"); };
       dd.querySelectorAll(".dd-item").forEach(it => it.addEventListener("click", () => dd.classList.remove("show")));
     }
-    wireDropdown("btn-settings", "settings-dd");
     // 批③：「批量工具 ▾」下拉整个已删（四项全部归位到各自阶段页/找客户页），无需再接线
     document.addEventListener("click", (e) => {
       if (!e.target.closest(".settings-menu") && !e.target.closest(".dd-wrap"))
