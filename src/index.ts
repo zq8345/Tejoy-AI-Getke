@@ -955,11 +955,11 @@ app.post("/api/analyze/batch", async (c) => {
       ).bind(limit).all();
   const leads = rows.results as any[];
 
-  const results = [];
-  for (const lead of leads) {
-    results.push(await analyzeLead(c.env, lead));
-    // 便宜模型也别打太猛，逐条串行即可
-  }
+  // 批⑦B：3 条并发（为什么是 3 见 ANALYZE_CONCURRENCY）。每条自己 try/catch，一条炸了不带走整批。
+  const results = await pool(leads, ANALYZE_CONCURRENCY, async (lead) => {
+    try { return await analyzeLead(c.env, lead); }
+    catch (e) { console.error("analyze:", lead.id, e); return { ok: false, id: lead.id, error: String(e) }; }
+  });
   const ok = results.filter((r) => r.ok).length;
   return c.json({ processed: results.length, ok, failed: results.length - ok, results });
 });
@@ -1604,18 +1604,21 @@ app.post("/api/rescan/batch", async (c) => {
   }
 
   let ok = 0, fetchFail = 0, hardFail = 0;
-  for (const lead of batch) {
-    // 只刷新组：status 不在重置名单里 → 只要新分数+新证据，不重写草稿（那封信已经发出去了）
+  // 批⑦B：3 条并发（为什么是 3 见 ANALYZE_CONCURRENCY）。每条自己 try/catch —— 一条炸了不能带走整批。
+  const outs = await pool(batch, ANALYZE_CONCURRENCY, async (lead) => {
+    // 只刷新组：status 不在重置名单里（批⑦A 后两组行为已一样，这个标记只用于 model 字段的标注）
     const scoreOnly = !RESCAN_RESET_STATUSES.includes(String(lead.status));
     try {
       // rescan:true 让 recordFetchFailure 的"别抹掉真分数"守卫让路 —— 重扫时旧分数已被宣布作废，
       // 抓不到就该诚实记成「官网抓不到·无法判断」，而不是留个作废标准的分数；
       // 且不让路会导致这条线索每次被重取、重扫永不完成（见 service.ts 那段注释）。
-      const out = await analyzeLead(c.env, lead, { scoreOnly, rescan: true });   // OpenRouter 串行：for 里 await
-      if (out.ok) ok++;
-      else if (out.fetchFailed) fetchFail++;
-      else hardFail++;
-    } catch (e) { hardFail++; console.error("rescan:", lead.id, e); }
+      return await analyzeLead(c.env, lead, { scoreOnly, rescan: true });
+    } catch (e) { console.error("rescan:", lead.id, e); return { ok: false, id: lead.id, error: String(e) }; }
+  });
+  for (const out of outs) {
+    if (out.ok) ok++;
+    else if ((out as any).fetchFailed) fetchFail++;
+    else hardFail++;
   }
   const remaining = await rescanRemaining(c.env, startedAt);
   console.log(`rescan batch: ok=${ok} 抓不到=${fetchFail} 失败=${hardFail} 剩余=${remaining}`);
@@ -1636,7 +1639,8 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 //    他的标准："如果每天只能分析30-50个信息，我压根都不需要用AI了。" ——
 //    cron 的 12 条/班是**无人值守后台**的保守值，拿它跑一次性批量任务是思维惯性错误。
 //    通道容量早已被证明：Joe 手点「批量分析」一小时扫了两百多条。
-//    所以重扫复用同一条通道（后台按钮 + 前端自驱循环，每批 ≤20 串行），428 条**当天跑完**。
+//    所以重扫复用同一条通道（后台按钮 + 前端自驱循环），428 条**当天跑完**。
+//    批⑦B 起批内 3 条并发（为什么是 3 见 ANALYZE_CONCURRENCY 那段）。
 //    → cron 那班一个字没动，Serper 烧钱速率自然也没动（重扫压根不经过 cron）。
 //
 // 2) **只刷新组安全的依据是 analyzeLead 的既有性质**，不是我新写的判断：
@@ -1647,6 +1651,34 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 // 3) **进度靠 DB 状态推导，不靠内存**：谁没扫 = `analysis 缺失 或 analyzed_at < rescan_started_at`。
 //    这让整件事**天然可断点续跑** —— 浏览器关了/网断了/中途叫停，再点一次就从断点继续，
 //    不需要任何"任务进度"表。
+// ⭐ 批⑦B 批内并发池：分析一条线索里 95% 的时间在等（抓官网 + 等模型），CPU 几乎不干活 ——
+//   串行跑等于把等待时间一条条加起来。3 条并行 ≈ 3 倍吞吐。
+//
+// **为什么是 3 不是更多**（这个数不能拍脑袋）：
+//   · Workers 每次调用**同时最多 6 路出站连接**。每条线索的抓站本身是串行的（首页 → 子页，
+//     一次 1 路），加上模型调用也是 1 路 → 单条线索任一时刻在飞 1-2 路。
+//     3 条并行 × 1-2 路 = 3-6 路，**正好在上限内**。开到 4 就会顶到 6 路上限开始互相排队，
+//     吞吐不再涨，还可能触发难查的超时。
+//   · 总工也明确说了别开到 4 以上。
+// ⚠️ 不能 export：index.ts 是 Worker 入口模块，顶层 export 的非函数值会被运行时当成 handler 校验并报
+//    "Incorrect type for map entry"（dry-run 查不出、只有真启动才报）——跟 APPROVE_MIN_SCORE 同一个坑。
+const ANALYZE_CONCURRENCY = 3;
+
+/** 定长并发池：始终保持 n 个在飞，完一个补一个。保持输入顺序返回结果。 */
+async function pool<T, R>(items: T[], n: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  return out;
+}
+
 // 重置组：这些状态的线索会被打回 new 重新分档；其余状态只刷新 analysis、status 不动
 const RESCAN_RESET_STATUSES = ["new", "analyzed", "approved", "queued", "pending"];
 const RESCAN_MAX_PER_CALL = 20;   // 单次调用上限（与既有 /api/analyze/batch 的 20 一致 —— 那条通道 Joe 手点实测过）

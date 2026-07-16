@@ -1,7 +1,7 @@
 // P3 发信：解析 AI 开发信 → 加退订/地址页脚 → 调 Resend → 状态回写 D1 → 每日限量
 import type { Env } from "./index";
 import { writeFollowup, writeWarmFollowup } from "./openrouter";
-import { getProfile } from "./service";
+import { getProfile, ensureDraft } from "./service";
 
 const RESEND_URL = "https://api.resend.com/emails";
 
@@ -245,12 +245,14 @@ export async function sendLead(env: Env, lead: any, autoSent = false): Promise<S
   if (!lead.email) return { ok: false, id: lead.id, skipped: "无邮箱" };
   if (SUPPRESSED_STATUSES.has(lead.status)) return { ok: false, id: lead.id, skipped: `压制名单(${lead.status})，不发送` };
 
-  const analysis = await env.DB.prepare(
-    "SELECT recommended_email FROM lead_analysis WHERE lead_id = ?"
-  ).bind(lead.id).first<{ recommended_email: string }>();
-  if (!analysis?.recommended_email) return { ok: false, id: lead.id, skipped: "无 AI 开发信（先分析）" };
+  // ⭐ 批⑦A：草稿**在这一刻才写**（没有就现生成）。sendLead 是所有发信路径的唯一必经点
+  //   （sendApprovedBatch / 手动「发送」/ human-approve 之后的发送 全都走它）→ 一处覆盖全部。
+  //   生成失败**只跳过这一条**：调用方（sendApprovedBatch）会把 status 从 queued 退回 approved，
+  //   下一批自然重试 —— 不会卡死整批，也不会丢掉这个客户。
+  const d = await ensureDraft(env, lead);
+  if (!d.ok || !d.draft) return { ok: false, id: lead.id, skipped: d.error || "无 AI 开发信（先分析）" };
 
-  const { subject, body } = parseEmail(analysis.recommended_email);
+  const { subject, body } = parseEmail(d.draft);
   const out = await deliverEmail(env, lead, subject, body, "initial", autoSent);
   if (out.ok) {
     await env.DB.prepare("UPDATE leads SET status='sent', updated_at=datetime('now') WHERE id=?").bind(lead.id).run();
