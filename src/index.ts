@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { basicAuth } from "hono/basic-auth";
 import { parseCsv, mapRowToLead } from "./csv";
-import { analyzeLead, getProfile, DEFAULT_PROFILE } from "./service";
+import { analyzeLead, getProfile, DEFAULT_PROFILE, ensureDraft } from "./service";
 import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese, isTrustedDirectorySource } from "./openrouter";
 import { scrapeSite } from "./scrape";
 import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed, autoSentToday, getBreakerStatus, BREAKER_WINDOW, BREAKER_THRESHOLD } from "./send";
@@ -741,6 +741,20 @@ app.post("/api/leads/:id/to-bench", async (c) => {
   if (!n) return c.json({ error: "这家没有任何社媒/电话渠道，碰不到（工作台也没辙）" }, 409);
   await c.env.DB.prepare("UPDATE leads SET bench_queued=1, updated_at=datetime('now') WHERE id=?").bind(id).run();
   return c.json({ ok: true, id });
+});
+
+// ---- 批⑦A：详情页「现在生成」开发信 ----
+// 草稿默认在**发送那一刻**才生成（写信占了账单 93%，不能给永远发不出去的线索白写）。
+// 但 Joe 有"想先看看信写成什么样、想先改一版"的场景 → 给他一个手动触发。
+// 复用 ensureDraft：已有草稿直接返回不重复烧钱；生成逻辑与发送路径**是同一份**，不会漂。
+app.post("/api/leads/:id/draft", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
+  const lead = await c.env.DB.prepare("SELECT id, company_name, website FROM leads WHERE id=?").bind(id).first<any>();
+  if (!lead) return c.json({ error: "not found" }, 404);
+  const d = await ensureDraft(c.env, lead);
+  if (!d.ok) return c.json({ error: d.error }, 409);
+  return c.json({ ok: true, draft: d.draft, generated: !!d.generated });
 });
 
 // ---- 批⑥C「他回了」：任何渠道客户回话了 → 置 replied + 写时间线 ----
