@@ -56,7 +56,7 @@ function usableSiteText(scraped: ScrapeResult): boolean {
 }
 
 // 抓不到官网：记一次失败；没到上限就留在 new 等下轮重试，到上限则归档但**不判死**。
-async function recordFetchFailure(env: Env, lead: any, scraped: ScrapeResult): Promise<AnalyzeOutcome> {
+async function recordFetchFailure(env: Env, lead: any, scraped: ScrapeResult, opts: { rescan?: boolean } = {}): Promise<AnalyzeOutcome> {
   const why = scraped.error || (scraped.ok ? "官网正文过少（疑似 JS 空壳/占位页）" : "官网抓取失败");
   await env.DB.prepare(
     "UPDATE leads SET fetch_fail_count = COALESCE(fetch_fail_count,0)+1, updated_at=datetime('now') WHERE id=?"
@@ -75,30 +75,48 @@ async function recordFetchFailure(env: Env, lead: any, scraped: ScrapeResult): P
   // 到上限：转 analyzed 让它别再占分析队列，但 match_score 保持 NULL —— 未打分 ≠ 不合格。
   const note = `连续 ${n} 次抓不到官网（${why}）。**未打分**：这不是"不合格"，是根本没看到官网内容。` +
     `需要人工看一眼或补个能打开的网址，再手动重新分析。`;
+  // ⚠️ 末尾这个 WHERE 是防误伤：这条线索若**以前抓得到、已有真分数**（例如 Seacoast 抓得到时拿过 75），
+  //    那个分数是基于真实官网内容得出的，绝不能被后来的网络抖动抹成 NULL。有真分数就保留，不覆盖。
+  //
+  // ⭐ 但**全量重扫时这个守卫必须让路**（批⑥A 实测撞出来的，不是设想）：
+  //   · 守卫的前提是"已有的分数是可信的，别让网络抖动毁了它"。
+  //   · 重扫的前提正相反 —— **所有旧分数都已被宣布作废**（新旧标准的混合物）。
+  //     此时若抓不到官网，诚实的记录是「官网抓不到·无法判断」(NULL)，
+  //     而不是留着一个**按已被推翻的标准算出来的分数**继续冒充有效判断。
+  //   · 而且不让路会死循环：这个 WHERE 挡掉的是**整个 DO UPDATE**，连 analyzed_at 都不更新
+  //     → 这条线索永远满足"analyzed_at < 重扫开始时间" → 每班被重取 → **重扫永不完成、
+  //       飞书完成信号永不触发**。生产里真有 4 家这种（fetch_fail_count 已经 4 了还挂着旧分数）。
+  const guard = opts.rescan ? "" : " WHERE lead_analysis.match_score IS NULL";
   await env.DB.prepare(
     `INSERT INTO lead_analysis (lead_id, customer_type, customer_category, match_score, needed_products, reason, recommended_email, model, analyzed_at)
      VALUES (?, ?, ?, NULL, NULL, ?, NULL, ?, datetime('now'))
      ON CONFLICT(lead_id) DO UPDATE SET
        customer_type=excluded.customer_type, customer_category=excluded.customer_category,
-       match_score=NULL, reason=excluded.reason, model=excluded.model, analyzed_at=excluded.analyzed_at
-     WHERE lead_analysis.match_score IS NULL`
-    // ⚠️ 末尾这个 WHERE 是防误伤：这条线索若**以前抓得到、已有真分数**（例如 Seacoast 抓得到时拿过 75），
-    //    那个分数是基于真实官网内容得出的，绝不能被后来的网络抖动抹成 NULL。有真分数就保留，不覆盖。
-  ).bind(lead.id, FETCH_FAIL_TYPE, categorizeCustomerType(FETCH_FAIL_TYPE), note, "fetch-failed(未调用 LLM)").run();
+       match_score=NULL, reason=excluded.reason, model=excluded.model, analyzed_at=excluded.analyzed_at${guard}`
+  ).bind(lead.id, FETCH_FAIL_TYPE, categorizeCustomerType(FETCH_FAIL_TYPE), note,
+         opts.rescan ? "fetch-failed(重扫·抓不到，旧分数已作废)" : "fetch-failed(未调用 LLM)").run();
   await env.DB.prepare(
     "UPDATE leads SET status='analyzed', updated_at=datetime('now') WHERE id=? AND status='new'"
   ).bind(lead.id).run();
   return { ok: false, id: lead.id, fetchFailed: true, giveUp: true, fetchFailCount: n, error: note };
 }
 
-// 分析单条线索：写入 lead_analysis，并把 leads.status 推进到 analyzed
-export async function analyzeLead(env: Env, lead: any): Promise<AnalyzeOutcome> {
+/**
+ * 分析单条线索：写入 lead_analysis，并把 leads.status 推进到 analyzed。
+ *
+ * ⚠️ **status 只会从 new → analyzed**（下面那条 UPDATE 带 `AND status='new'`）。
+ *    这条性质是全量重扫"只刷新组"能安全复用本函数的**全部依据**：
+ *    一条 status='sent' 的线索走完这里，analysis 换新、status 纹丝不动、更不会触发任何发信。
+ *
+ * opts.scoreOnly：只要新分数+新证据，不重写开发信草稿（见下方 email 那行的注释）。
+ */
+export async function analyzeLead(env: Env, lead: any, opts: { scoreOnly?: boolean; rescan?: boolean } = {}): Promise<AnalyzeOutcome> {
   const profile = await getProfile(env);
   try {
     const scraped = await scrapeSite(lead.website || "");
 
     // ⭐ 抓不到官网就到此为止：不调 LLM、不写分、不推进 status（见上方 FETCH_FAIL_MAX 注释）
-    if (!usableSiteText(scraped)) return await recordFetchFailure(env, lead, scraped);
+    if (!usableSiteText(scraped)) return await recordFetchFailure(env, lead, scraped, { rescan: opts.rescan });
 
     const siteText = scraped.text;
 
@@ -120,9 +138,18 @@ export async function analyzeLead(env: Env, lead: any): Promise<AnalyzeOutcome> 
     //    source='search' 绝不享受背书（攻略文章正是从搜索来的）。
     //    keyword 存的是 NMEA affcode（Dealer/International）；存量老数据为 NULL → 退回泛称。
     const score = await scoreLead(env, profile, lead.company_name || "", siteText, lead.source, lead.keyword);
-    const email = await writeEmail(env, profile, lead.company_name || "", siteText, score);
+    // ⭐ scoreOnly（全量重扫的"只刷新组"用）：**不重写 recommended_email**。两个理由：
+    //   1) 正确性 —— 这条线索的信**已经发出去了**。recommended_email 是详情页「已发出的开发信」的数据源，
+    //      重写它 = 给 Joe 看一封从没发过的草稿并告诉他"这是你发出去的" = 又一个"系统在撒谎"。
+    //      真正发出去的正文在 emails.body 里，那才是历史记录，重扫不该碰。
+    //   2) 成本 —— writeEmail 用的是贵模型(qwen3.7-max)，打分用的是便宜的(deepseek)。
+    //      44 家只刷新组省掉一半 LLM 调用，且省的正好是贵的那一半。
+    //   总工的原话也只要"新分数+新证据"，没要新草稿。
+    const email = opts.scoreOnly ? null : await writeEmail(env, profile, lead.company_name || "", siteText, score);
     const category = categorizeCustomerType(score.customer_type);
 
+    // ⚠️ scoreOnly 时 recommended_email 用 `COALESCE(excluded.x, lead_analysis.x)` 保留原值 ——
+    //    不能直接 excluded.recommended_email（那是 NULL，会把已发出的草稿抹掉）。
     await env.DB.prepare(
       `INSERT INTO lead_analysis (lead_id, customer_type, customer_category, match_score, needed_products, reason, recommended_email, model, analyzed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -130,11 +157,15 @@ export async function analyzeLead(env: Env, lead: any): Promise<AnalyzeOutcome> 
          customer_type=excluded.customer_type, customer_category=excluded.customer_category,
          match_score=excluded.match_score,
          needed_products=excluded.needed_products, reason=excluded.reason,
-         recommended_email=excluded.recommended_email, model=excluded.model,
+         recommended_email=COALESCE(excluded.recommended_email, lead_analysis.recommended_email),
+         model=excluded.model,
          analyzed_at=excluded.analyzed_at`
     ).bind(
       lead.id, score.customer_type, category, score.match_score, score.needed_products,
-      score.reason, email, `${env.SCORE_MODEL || "deepseek/deepseek-chat"} + ${env.EMAIL_MODEL || "qwen/qwen3.7-max"}`
+      score.reason, email,
+      opts.scoreOnly
+        ? `${env.SCORE_MODEL || "deepseek/deepseek-chat"}（重扫·只刷新分数，未重写草稿）`
+        : `${env.SCORE_MODEL || "deepseek/deepseek-chat"} + ${env.EMAIL_MODEL || "qwen/qwen3.7-max"}`
     ).run();
 
     // 已分析且未被人工处理过的，推进到 analyzed（仍属「待审核」分组）
