@@ -1,13 +1,14 @@
 import { Hono } from "hono";
+import { installDevEgressGuard, BUILD_MARKER, devGuardOn } from "./devguard";
 import { basicAuth } from "hono/basic-auth";
 import { parseCsv, mapRowToLead } from "./csv";
-import { analyzeLead, getProfile, DEFAULT_PROFILE } from "./service";
+import { analyzeLead, getProfile, DEFAULT_PROFILE, ensureDraft } from "./service";
 import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese, isTrustedDirectorySource } from "./openrouter";
 import { scrapeSite } from "./scrape";
 import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed, autoSentToday, getBreakerStatus, BREAKER_WINDOW, BREAKER_THRESHOLD } from "./send";
 import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
 import { findLeadEmail } from "./findemail";
-import { ingestReplies } from "./replies";
+import { ingestReplies, matchReplyToLead } from "./replies";
 import { categorizeCustomerType, classifyKillReason, KILL_REASONS } from "./taxonomy";
 import { larkConfigured, larkSend, digestCard, testCard, inboundCard } from "./notify";
 import { catalogHtml } from "./landing";
@@ -36,6 +37,9 @@ export interface Env {
   LARK_IMAP_USER: string;
   LARK_IMAP_PASS: string;
   LARK_WEBHOOK_URL: string;      // 飞书群「自定义机器人」webhook（可选，配了才推送）
+  // ↓ dev 出站闸门用。**只存在于 .dev.vars**（wrangler dev 才读），生产 secrets 里没有 → 生产零影响。
+  DEV_LOCAL?: string;            // "1" = 本地进程，装出站闸门（只准出 localhost）
+  DEV_EGRESS_ALLOW?: string;     // 逗号分隔：逐个点名放行的真实主机（点名 = 明知故犯，会打横幅）
   LARK_WEBHOOK_SECRET: string;   // 飞书机器人签名密钥（可选，开了签名校验才需要）
   RESEND_WEBHOOK_SECRET: string; // Resend webhook 签名密钥（whsec_...，可选但强烈建议配）
   DEV_BYPASS_AUTH?: string;      // 仅本地 .dev.vars：跳过登录鉴权（生产无此变量）
@@ -743,6 +747,20 @@ app.post("/api/leads/:id/to-bench", async (c) => {
   return c.json({ ok: true, id });
 });
 
+// ---- 批⑦A：详情页「现在生成」开发信 ----
+// 草稿默认在**发送那一刻**才生成（写信占了账单 93%，不能给永远发不出去的线索白写）。
+// 但 Joe 有"想先看看信写成什么样、想先改一版"的场景 → 给他一个手动触发。
+// 复用 ensureDraft：已有草稿直接返回不重复烧钱；生成逻辑与发送路径**是同一份**，不会漂。
+app.post("/api/leads/:id/draft", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
+  const lead = await c.env.DB.prepare("SELECT id, company_name, website FROM leads WHERE id=?").bind(id).first<any>();
+  if (!lead) return c.json({ error: "not found" }, 404);
+  const d = await ensureDraft(c.env, lead);
+  if (!d.ok) return c.json({ error: d.error }, 409);
+  return c.json({ ok: true, draft: d.draft, generated: !!d.generated });
+});
+
 // ---- 批⑥C「他回了」：任何渠道客户回话了 → 置 replied + 写时间线 ----
 //
 // ⭐ 命名与归属遵循 Joe 定的原则："**邮箱和社媒都只是手段**……哪些邮箱发过邮件，就做一个标识，
@@ -955,11 +973,11 @@ app.post("/api/analyze/batch", async (c) => {
       ).bind(limit).all();
   const leads = rows.results as any[];
 
-  const results = [];
-  for (const lead of leads) {
-    results.push(await analyzeLead(c.env, lead));
-    // 便宜模型也别打太猛，逐条串行即可
-  }
+  // 批⑦B：3 条并发（为什么是 3 见 ANALYZE_CONCURRENCY）。每条自己 try/catch，一条炸了不带走整批。
+  const results = await pool(leads, ANALYZE_CONCURRENCY, async (lead) => {
+    try { return await analyzeLead(c.env, lead); }
+    catch (e) { console.error("analyze:", lead.id, e); return { ok: false, id: lead.id, error: String(e) }; }
+  });
   const ok = results.filter((r) => r.ok).length;
   return c.json({ processed: results.length, ok, failed: results.length - ok, results });
 });
@@ -1388,6 +1406,8 @@ app.post("/api/settings/notify", async (c) => {
   return c.json({ ok: true });
 });
 // ---- 飞书通知：发测试卡片 ----
+app.get("/api/_whoami", (c) => c.json({ marker: BUILD_MARKER, guard: devGuardOn(c.env), lark: String(c.env.LARK_WEBHOOK_URL||"").slice(0,32) }));
+
 app.post("/api/notify/test", async (c) => {
   if (!larkConfigured(c.env)) return c.json({ ok: false, error: "尚未配置 LARK_WEBHOOK_URL（把飞书机器人 webhook 发给管理员注入）" }, 400);
   const r = await larkSend(c.env, testCard(c.env.ADMIN_URL || c.env.APP_URL));
@@ -1403,6 +1423,18 @@ app.post("/api/webhooks/resend", async (c) => {
   try { event = JSON.parse(raw); } catch { return c.json({ error: "bad json" }, 400); }
   const r = await handleResendEvent(c.env, event);
   return c.json(r);
+});
+
+// ---- 批⑧：回复匹配自测（不碰 IMAP）----
+// 匹配逻辑是这条链上最容易悄悄坏掉的一环（坏了的表现就是"什么都没发生"，跟"没人回信"长得一样）。
+// 给它一个不依赖真邮箱、可反复跑的入口：传 from/inReplyTo，看它匹到谁、走的哪一层。
+app.post("/api/replies/match-test", async (c) => {
+  const b = await c.req.json<{ from?: string; inReplyTo?: string; references?: string[] }>().catch(() => ({}));
+  const m = await matchReplyToLead(
+    c.env, String(b.from || "").toLowerCase().trim(),
+    String(b.inReplyTo || ""), Array.isArray(b.references) ? b.references : [],
+  );
+  return c.json(m);
 });
 
 // ---- P4 回复处理：手动拉取新回复 ----
@@ -1442,6 +1474,41 @@ app.get("/api/replies", async (c) => {
      ORDER BY r.id DESC LIMIT 200`
   ).all();
   return c.json({ replies: rows.results });
+});
+
+// ---- 批⑧ Bug2 第三条：孤儿回复（匹配不上任何线索）----
+// 为什么必须单开一个接口：「已回复」页的数据源是 `/api/leads?group=replied`，**每行一个线索**。
+// 孤儿回复根本没有线索 → 它在那个页面上**永远不可能出现**。这就是"入库就沉底"的机制。
+app.get("/api/replies/orphans", async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT id, from_email, subject, summary, category, content, received_at
+       FROM replies WHERE lead_id IS NULL ORDER BY id DESC LIMIT 50`
+  ).all();
+  return c.json({ orphans: rows.results });
+});
+
+// 人工把一条孤儿回复挂到某条线索上 —— 三层匹配也有兜不住的时候（换域名回、私人邮箱回），
+// 那时得有人能一键接上，而不是只能干看着。
+app.post("/api/replies/:id/link", async (c) => {
+  const id = Number(c.req.param("id"));
+  const b = await c.req.json<{ lead_id?: number }>().catch(() => ({} as any));
+  const leadId = Number(b.lead_id);
+  if (!id || !leadId) return c.json({ error: "缺少 reply id 或 lead_id" }, 400);
+  const lead = await c.env.DB.prepare("SELECT id, company_name, status FROM leads WHERE id = ?")
+    .bind(leadId).first<{ id: number; company_name: string; status: string }>();
+  if (!lead) return c.json({ error: `线索 #${leadId} 不存在` }, 404);
+  const reply = await c.env.DB.prepare("SELECT id, lead_id, from_email, category FROM replies WHERE id = ?")
+    .bind(id).first<{ id: number; lead_id: number | null; from_email: string; category: string }>();
+  if (!reply) return c.json({ error: "回复不存在" }, 404);
+  if (reply.lead_id) return c.json({ error: `这条回复已经挂在线索 #${reply.lead_id} 上了` }, 400);
+
+  await c.env.DB.prepare("UPDATE replies SET lead_id = ? WHERE id = ?").bind(leadId, id).run();
+  // 推进状态用**和自动匹配完全一样的那两行**（replies.ts:199-200 照抄，含投诉→黑名单这条分支）——
+  // 人工救回来的和自动匹配上的必须长得一样，否则会出现"两套语义"。
+  const newStatus = reply.category === "complaint" ? "blacklisted" : "replied";
+  await c.env.DB.prepare("UPDATE leads SET status=?, updated_at=datetime('now') WHERE id=?")
+    .bind(newStatus, leadId).run();
+  return c.json({ ok: true, lead_id: leadId, company_name: lead.company_name, status: newStatus });
 });
 
 // ---- Landing 落地页（公开）----
@@ -1604,18 +1671,21 @@ app.post("/api/rescan/batch", async (c) => {
   }
 
   let ok = 0, fetchFail = 0, hardFail = 0;
-  for (const lead of batch) {
-    // 只刷新组：status 不在重置名单里 → 只要新分数+新证据，不重写草稿（那封信已经发出去了）
+  // 批⑦B：3 条并发（为什么是 3 见 ANALYZE_CONCURRENCY）。每条自己 try/catch —— 一条炸了不能带走整批。
+  const outs = await pool(batch, ANALYZE_CONCURRENCY, async (lead) => {
+    // 只刷新组：status 不在重置名单里（批⑦A 后两组行为已一样，这个标记只用于 model 字段的标注）
     const scoreOnly = !RESCAN_RESET_STATUSES.includes(String(lead.status));
     try {
       // rescan:true 让 recordFetchFailure 的"别抹掉真分数"守卫让路 —— 重扫时旧分数已被宣布作废，
       // 抓不到就该诚实记成「官网抓不到·无法判断」，而不是留个作废标准的分数；
       // 且不让路会导致这条线索每次被重取、重扫永不完成（见 service.ts 那段注释）。
-      const out = await analyzeLead(c.env, lead, { scoreOnly, rescan: true });   // OpenRouter 串行：for 里 await
-      if (out.ok) ok++;
-      else if (out.fetchFailed) fetchFail++;
-      else hardFail++;
-    } catch (e) { hardFail++; console.error("rescan:", lead.id, e); }
+      return await analyzeLead(c.env, lead, { scoreOnly, rescan: true });
+    } catch (e) { console.error("rescan:", lead.id, e); return { ok: false, id: lead.id, error: String(e) }; }
+  });
+  for (const out of outs) {
+    if (out.ok) ok++;
+    else if ((out as any).fetchFailed) fetchFail++;
+    else hardFail++;
   }
   const remaining = await rescanRemaining(c.env, startedAt);
   console.log(`rescan batch: ok=${ok} 抓不到=${fetchFail} 失败=${hardFail} 剩余=${remaining}`);
@@ -1636,7 +1706,8 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 //    他的标准："如果每天只能分析30-50个信息，我压根都不需要用AI了。" ——
 //    cron 的 12 条/班是**无人值守后台**的保守值，拿它跑一次性批量任务是思维惯性错误。
 //    通道容量早已被证明：Joe 手点「批量分析」一小时扫了两百多条。
-//    所以重扫复用同一条通道（后台按钮 + 前端自驱循环，每批 ≤20 串行），428 条**当天跑完**。
+//    所以重扫复用同一条通道（后台按钮 + 前端自驱循环），428 条**当天跑完**。
+//    批⑦B 起批内 3 条并发（为什么是 3 见 ANALYZE_CONCURRENCY 那段）。
 //    → cron 那班一个字没动，Serper 烧钱速率自然也没动（重扫压根不经过 cron）。
 //
 // 2) **只刷新组安全的依据是 analyzeLead 的既有性质**，不是我新写的判断：
@@ -1647,6 +1718,34 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 // 3) **进度靠 DB 状态推导，不靠内存**：谁没扫 = `analysis 缺失 或 analyzed_at < rescan_started_at`。
 //    这让整件事**天然可断点续跑** —— 浏览器关了/网断了/中途叫停，再点一次就从断点继续，
 //    不需要任何"任务进度"表。
+// ⭐ 批⑦B 批内并发池：分析一条线索里 95% 的时间在等（抓官网 + 等模型），CPU 几乎不干活 ——
+//   串行跑等于把等待时间一条条加起来。3 条并行 ≈ 3 倍吞吐。
+//
+// **为什么是 3 不是更多**（这个数不能拍脑袋）：
+//   · Workers 每次调用**同时最多 6 路出站连接**。每条线索的抓站本身是串行的（首页 → 子页，
+//     一次 1 路），加上模型调用也是 1 路 → 单条线索任一时刻在飞 1-2 路。
+//     3 条并行 × 1-2 路 = 3-6 路，**正好在上限内**。开到 4 就会顶到 6 路上限开始互相排队，
+//     吞吐不再涨，还可能触发难查的超时。
+//   · 总工也明确说了别开到 4 以上。
+// ⚠️ 不能 export：index.ts 是 Worker 入口模块，顶层 export 的非函数值会被运行时当成 handler 校验并报
+//    "Incorrect type for map entry"（dry-run 查不出、只有真启动才报）——跟 APPROVE_MIN_SCORE 同一个坑。
+const ANALYZE_CONCURRENCY = 3;
+
+/** 定长并发池：始终保持 n 个在飞，完一个补一个。保持输入顺序返回结果。 */
+async function pool<T, R>(items: T[], n: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  return out;
+}
+
 // 重置组：这些状态的线索会被打回 new 重新分档；其余状态只刷新 analysis、status 不动
 const RESCAN_RESET_STATUSES = ["new", "analyzed", "approved", "queued", "pending"];
 const RESCAN_MAX_PER_CALL = 20;   // 单次调用上限（与既有 /api/analyze/batch 的 20 一致 —— 那条通道 Joe 手点实测过）
@@ -1671,12 +1770,60 @@ async function rescanStats(env: Env): Promise<{ hi: number; lo: number; nil: num
   return { hi: s?.hi ?? 0, lo: s?.lo ?? 0, nil: s?.nil ?? 0 };
 }
 
+/**
+ * 批⑧：收回复失败必须**响**，不能像以前那样悄无声息地断着。
+ * 一天最多吵一次（IMAP 挂了通常是持续性的，每 6h 推一条会变成噪音，噪音久了 Joe 就不看了）。
+ */
+async function alertReplyFailure(env: Env, why: string): Promise<void> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    if ((await getSetting(env, "reply_fail_alert_date", "")) === today) return;   // 今天已经吵过
+    await setSetting(env, "reply_fail_alert_date", today);
+    await setSetting(env, "reply_fail_last", `${new Date().toISOString().slice(0, 19).replace("T", " ")} ${why}`.slice(0, 300));
+    if (!larkConfigured(env)) return;
+    await larkSend(env, { msg_type: "text", content: { text:
+      `TEJOY ⚠️ 收客户回复失败\n${why}\n\n` +
+      `**这意味着现在客户回信我们可能收不到。**\n` +
+      `已经收到的回复不受影响；但新回复要么延迟、要么丢。请尽快看一眼 hello@tejoy.net 的 IMAP。\n` +
+      `（同样的错一天只提醒一次，免得刷屏）` } });
+  } catch (e) { console.error("alertReplyFailure:", e); }   // 告警失败不能反过来拖垮 cron
+}
+
 // Cron 定时任务：自动找客户 + 自动分析新线索（7×24 运行）
 async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
   // ⚠️ 全量重扫**不在这里** —— 它走交互式批量通道（/api/rescan/*，后台按钮驱动）。
   //    cron 这 12 条/班是**日常新增线索**的节奏；拿它跑一次性批量任务要 9 天，
   //    而 Joe 的标准是"428 条当天跑完"。两件事，两条通道，互不干扰。
   let inserted = 0, analyzed = 0, replies = 0, autoApproved = 0, autoSent = 0;
+
+  // ⭐ step 0）收客户回复 —— **排在最前面，这个顺序本身是修复的一部分**。
+  //
+  // 它以前排在第 3 步（找客户 → 分析 12 条 → 自动批准 → 自动发送 → **才轮到收回复**）。
+  // 那个排序把这条链上**最值钱的一步**放在了最后：一个真客户回信，价值远大于分析 12 条新线索。
+  // 排最后意味着前面任何一步慢了/挂了，它就轮不到 —— 而且没人会知道。
+  // 今天的实证：Data Lake 的 Michael 昨天 19:06 就回信了（"Please send your catalog and pricing."），
+  // 系统一无所知，Joe 是自己在邮箱里肉眼看见的。
+  //
+  // ⚠️ 而且**失败必须响**：ingestReplies 里 IMAP 失败时是 `return { error }` 而**不是 throw** ——
+  //    以前调用方只读 `r.ingested`，`r.error` 根本没人看，连 console.error 都不会打。
+  //    catch 是摆设（没东西抛给它）。这就是"静默断了不知道多久"的机制。
+  try {
+    if (!env.LARK_IMAP_PASS) {
+      // 以前这里是 `if (env.LARK_IMAP_PASS) {...}` —— 没配就**整段跳过、一声不吭**。
+      console.error("replies: 缺少 LARK_IMAP_PASS，收回复整段跳过");
+      await alertReplyFailure(env, "缺少 LARK_IMAP_PASS（IMAP 密码没配），收回复功能整个没在跑");
+    } else {
+      const r = await ingestReplies(env);
+      replies = r.ingested || 0;
+      if (r.error) {                       // ← 关键：这个 error 以前没人读
+        console.error("replies:", r.error);
+        await alertReplyFailure(env, r.error);
+      }
+    }
+  } catch (e: any) {
+    console.error("replies:", e);
+    await alertReplyFailure(env, e?.message || String(e));
+  }
 
   // 1) 搜索找新客户（每关键词 5 条，控制用量）—— #S1 受 discovery_enabled 开关控制（默认关，防 cron 每 6h 全量烧 Serper 积分）
   try {
@@ -1798,8 +1945,7 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
     }
   } catch (e) { console.error("auto-send:", e); }
 
-  // 3) 拉取并处理客户回复（P4；热回复会在 ingestReplies 内实时推飞书）
-  try { if (env.LARK_IMAP_PASS) { const r = await ingestReplies(env); replies = r.ingested || 0; } } catch (e) { console.error("replies:", e); }
+  // 3) 收回复已挪到 **step 0**（cron 最前面）—— 见那里的注释。这里只留个路标防止有人再排回来。
   // 3.5) 无回复自动跟进（仅当开关开启；每轮最多 5 封，遵守每日上限）
   try { await sendFollowupBatch(env, 5); } catch (e) { console.error("followup:", e); }
 
@@ -1857,4 +2003,11 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   } catch (e) { console.error("digest:", e); }
 }
 
-export default { fetch: app.fetch, scheduled };
+// ⚠️ 入口的形状必须保持"default 导出一个全是函数的对象" —— 顶层 export 非函数会让 Worker
+//    拒绝启动（`Incorrect type for map entry`），且 dry-run 抓不到。改这里必须真起 8788。
+// devguard：本地进程的出站闸门。装在入口 = fetch 和 scheduled(cron) **两条路都兜住**，
+//    不是只兜 HTTP 那条（③ 号事故就是 cron 路径推的飞书）。生产 DEV_LOCAL 不存在 → 空操作。
+export default {
+  fetch: (req: Request, env: Env, ctx: ExecutionContext) => { installDevEgressGuard(env); return app.fetch(req, env, ctx); },
+  scheduled: (event: ScheduledController, env: Env, ctx: ExecutionContext) => { installDevEgressGuard(env); return scheduled(event, env, ctx); },
+};

@@ -102,6 +102,67 @@ async function recordFetchFailure(env: Env, lead: any, scraped: ScrapeResult, op
 }
 
 /**
+ * 批⑦C：打分失败的就地重试（指数退避 1s → 3s）。
+ * 只包**模型调用**这一段 —— 官网正文已经在手里了，重试不重抓。
+ * 429/5xx/网络抖动这类瞬时错误一次退避基本就过；真挂了（额度尽/密钥失效）也就多花 4 秒确认，
+ * 之后照常抛出去让调用方按"模型失败"处理（重扫的停滞检测靠的就是这个信号）。
+ */
+async function retryScore<T>(fn: () => Promise<T>, leadId: number): Promise<T> {
+  const DELAYS = [1000, 3000];
+  let last: any;
+  for (let i = 0; i <= DELAYS.length; i++) {
+    try { return await fn(); }
+    catch (e: any) {
+      last = e;
+      if (i === DELAYS.length) break;
+      console.log(`score retry #${leadId}: 第 ${i + 1} 次失败（${String(e.message || e).slice(0, 60)}），${DELAYS[i]}ms 后重试（官网不重抓）`);
+      await new Promise((r) => setTimeout(r, DELAYS[i]));
+    }
+  }
+  throw last;
+}
+
+/**
+ * ⭐ 批⑦A：开发信**在发送那一刻才写**，不在分析时写。
+ *
+ * 为什么改：Joe 的 OpenRouter 账单 **93% 烧在写信模型上**（Qwen $9.15 vs 打分 $0.67）——
+ * 因为 analyzeLead 给**每一家**都写整封信，包括 <60 写完就直接归档的（433 家里约 300 家白写）。
+ * 挪到发送时之后：只有真要发的那 ~128 家才写信 → 重扫的 AI 成本从 ~$10 掉到 ~$0.67（只剩打分）。
+ *
+ * ⚠️ 为什么要重抓一次官网：**抓取正文没存库**（总工定的：存了膨胀不值得）。而信必须引用官网的
+ *    具体内容才不像群发。所以这里重抓 —— 抓站不花钱，只花时间，且只对真要发的那批发生。
+ *    抓不到时**仍然写**（不阻断）：这条线索既然打到 ≥60，说明分析时官网是读得到的，
+ *    此刻抓不到多半是抖动；而 reason 里本来就带着官网证据的引用（H3 要求 buyer_type 必须引证），
+ *    信仍然是针对性的，只是不如有全文时丰富。为了一次抖动就不发一个已经决定要发的客户，不划算。
+ *
+ * 幂等：已有草稿直接返回，不重复烧钱。
+ */
+export async function ensureDraft(env: Env, lead: any): Promise<{ ok: boolean; draft?: string; error?: string; generated?: boolean }> {
+  const a = await env.DB.prepare(
+    "SELECT recommended_email, match_score, reason, needed_products, customer_type FROM lead_analysis WHERE lead_id=?"
+  ).bind(lead.id).first<any>();
+  if (a?.recommended_email) return { ok: true, draft: a.recommended_email };
+  if (!a || a.match_score == null) {
+    // 未打分 ≠ 低分（多半是官网抓不到）。没有分数就没有"为什么适合"，写出来的只能是空话。
+    return { ok: false, error: "还没打分，写不了信（先 AI 分析）" };
+  }
+  try {
+    const profile = await getProfile(env);
+    const scraped = await scrapeSite(lead.website || "");
+    if (!scraped.ok) console.log(`draft: #${lead.id} 官网此刻抓不到（${scraped.error}），用打分时的证据写`);
+    const draft = await writeEmail(env, profile, lead.company_name || "", scraped.text, {
+      customer_type: a.customer_type || "", match_score: a.match_score,
+      needed_products: a.needed_products || "", reason: a.reason || "", country_code: "",
+    }, lead.website);
+    await env.DB.prepare("UPDATE lead_analysis SET recommended_email=? WHERE lead_id=?").bind(draft, lead.id).run();
+    return { ok: true, draft, generated: true };
+  } catch (e: any) {
+    // 生成失败**只跳过这一条**，不能让它卡死整批（调用方会把 status 退回 approved 等下批重试）
+    return { ok: false, error: `开发信生成失败：${e.message || String(e)}` };
+  }
+}
+
+/**
  * 分析单条线索：写入 lead_analysis，并把 leads.status 推进到 analyzed。
  *
  * ⚠️ **status 只会从 new → analyzed**（下面那条 UPDATE 带 `AND status='new'`）。
@@ -137,23 +198,27 @@ export async function analyzeLead(env: Env, lead: any, opts: { scoreOnly?: boole
     //    比爬虫瞎猜官网可靠。白名单与安全约束见 openrouter.ts 的 sourceEndorsement ——
     //    source='search' 绝不享受背书（攻略文章正是从搜索来的）。
     //    keyword 存的是 NMEA affcode（Dealer/International）；存量老数据为 NULL → 退回泛称。
-    const score = await scoreLead(env, profile, lead.company_name || "", siteText, lead.source, lead.keyword);
-    // ⭐ scoreOnly（全量重扫的"只刷新组"用）：**不重写 recommended_email**。两个理由：
-    //   1) 正确性 —— 这条线索的信**已经发出去了**。recommended_email 是详情页「已发出的开发信」的数据源，
-    //      重写它 = 给 Joe 看一封从没发过的草稿并告诉他"这是你发出去的" = 又一个"系统在撒谎"。
-    //      真正发出去的正文在 emails.body 里，那才是历史记录，重扫不该碰。
-    //   2) 成本 —— writeEmail 用的是贵模型(qwen3.7-max)，打分用的是便宜的(deepseek)。
-    //      44 家只刷新组省掉一半 LLM 调用，且省的正好是贵的那一半。
-    //   总工的原话也只要"新分数+新证据"，没要新草稿。
-    // 传 website 进去：公司名可能是脏的（搜索结果的页面标题），writeEmail 会用域名主体兜底称呼
-    const email = opts.scoreOnly ? null : await writeEmail(env, profile, lead.company_name || "", siteText, score, lead.website);
+    //
+    // ⭐ 批⑦C：官网已经抓到了 —— 打分失败**就地重试**，别让整条重来。
+    //   以前：scoreLead 抛错 → analyzeLead 抛错 → 这条留 new → 下一批**重新抓一遍官网**。
+    //   抓站是这条流水线里最慢的一段（首页最多 18s + 子页），为一次模型抖动白抓一遍不划算。
+    //   正文就在手里（siteText），重试只花模型那一次的钱和时间。
+    //   重试仍失败才留给下一批（下一批会重抓 —— 接受：**不把正文存库**，膨胀不值得，总工定的）。
+    const score = await retryScore(() =>
+      scoreLead(env, profile, lead.company_name || "", siteText, lead.source, lead.keyword), lead.id);
+    // ⭐ 批⑦A：**分析不再写信**（分析 = 抓站 + 打分，到此为止）。
+    //   写信的钱 93% 花在了永远发不出去的线索上（<60 写完就归档）。草稿改由 ensureDraft()
+    //   在**发送那一刻**懒生成 —— 见本文件上方那段注释。
+    //   顺带：`scoreOnly` 这个参数因此退化了 —— 它当初就是为了"重扫只刷新组时别重写草稿"，
+    //   而现在**任何分析都不写草稿**，两组行为本来就一样。保留它只为让重扫调用点的语义读得出来，
+    //   以及下面 model 字段能标出这条是重扫刷的还是新分析的。
     const category = categorizeCustomerType(score.customer_type);
 
-    // ⚠️ scoreOnly 时 recommended_email 用 `COALESCE(excluded.x, lead_analysis.x)` 保留原值 ——
-    //    不能直接 excluded.recommended_email（那是 NULL，会把已发出的草稿抹掉）。
+    // ⚠️ recommended_email 用 `COALESCE(excluded.x, lead_analysis.x)` 保留原值 —— 这里传的是 NULL，
+    //    直接 excluded 会把**已发出的那封信**抹掉（详情页「已发出的开发信」就是读它）。
     await env.DB.prepare(
       `INSERT INTO lead_analysis (lead_id, customer_type, customer_category, match_score, needed_products, reason, recommended_email, model, analyzed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'))
        ON CONFLICT(lead_id) DO UPDATE SET
          customer_type=excluded.customer_type, customer_category=excluded.customer_category,
          match_score=excluded.match_score,
@@ -163,10 +228,10 @@ export async function analyzeLead(env: Env, lead: any, opts: { scoreOnly?: boole
          analyzed_at=excluded.analyzed_at`
     ).bind(
       lead.id, score.customer_type, category, score.match_score, score.needed_products,
-      score.reason, email,
+      score.reason,
       opts.scoreOnly
-        ? `${env.SCORE_MODEL || "deepseek/deepseek-chat"}（重扫·只刷新分数，未重写草稿）`
-        : `${env.SCORE_MODEL || "deepseek/deepseek-chat"} + ${env.EMAIL_MODEL || "qwen/qwen3.7-max"}`
+        ? `${env.SCORE_MODEL || "deepseek/deepseek-chat"}（重扫·只刷新分数）`
+        : `${env.SCORE_MODEL || "deepseek/deepseek-chat"}（打分；开发信在发送时生成）`
     ).run();
 
     // 已分析且未被人工处理过的，推进到 analyzed（仍属「待审核」分组）
