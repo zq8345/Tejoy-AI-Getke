@@ -80,6 +80,12 @@
     .st-new { background:#33383f; color:#cfd6e2; }
     /* 待分析：机器还没处理完，人不用做什么 → 比「待审核」(等你审) 更暗、更安静，别抢注意力 */
     .st-todo { background:#2b2f36; color:#8c94a3; }
+    /* 顺带修④ 会话过期横幅：钉在顶部，因为此刻**页面上的每个数字都可能是旧的** */
+    #sess-expired { position:fixed; top:0; left:0; right:0; z-index:9999; padding:10px 16px;
+      background:#3a1f1e; border-bottom:1px solid #7a3b36; color:#ffb3ab; font-size:13px;
+      display:flex; align-items:center; gap:12px; }
+    #sess-expired button { margin-left:auto; padding:5px 12px; border-radius:6px; cursor:pointer;
+      background:var(--blue); border:none; color:#fff; font-size:12.5px; }
     /* 批⑥A 重扫进度：428 家要跑 1-2 小时，**绝不能是黑盒** —— 必须实时看得见在动 */
     .rescan-bar { margin-top:9px; padding:9px 11px; border:1px solid var(--border); border-radius:7px;
       background:var(--bg); font-size:13px; line-height:1.7; }
@@ -665,6 +671,7 @@
         <div class="k">间隔天数</div><div><input id="fu-delay" type="number" min="1" max="60" class="fld"> <span class="hint">发出后几天没回复就跟进（建议 3-5）</span></div>
         <div class="k">已参与跟进间隔</div><div><input id="fu-engaged-delay" type="number" min="1" max="60" class="fld"> <span class="hint">点过链接的线索多久跟进（更短更暖，建议 1-2 天）</span></div>
         <div class="k">最多跟进次数</div><div><input id="fu-max" type="number" min="1" max="5" class="fld"> <span class="hint">每个客户最多跟进几次（建议 1-2）</span></div>
+        <div class="k">没回音归档</div><div><input id="fu-noreply" type="number" min="1" max="90" class="fld"> <span class="hint">跟进发满后再等这么多天还是没回应 → 自动归档（默认 7）。不然这批人会永远堵在「已发送」格里，把真正该看的淹掉</span></div>
       </div>
       <p class="hint" style="margin:2px 0 0">跟进信由 AI 生成（简短礼貌），遵守每日发信上限。已回复/退订/退信的自动排除。Cron 每 6 小时自动跑一批。</p>
 
@@ -746,6 +753,40 @@
     let query = "";
 
     const $ = (s) => document.querySelector(s);
+
+    // ⭐ 顺带修④：会话过期 → 界面静默死掉（Joe 撞过：点「发信设置」毫无反应）
+    //
+    // 根因：admin.tejoy.com 走 Cloudflare Access，**在边缘拦截**。会话一过期，fetch 拿到的不是
+    // 401 而是**登录页 HTML**（fetch 默认跟随重定向）→ 调用方 `.then(r=>r.json())` 抛错 →
+    // 整个 handler 当场死掉 → 弹窗永远不出现，**屏幕上什么都没有**。
+    //
+    // 全站 73 处 fetch 里 44 处没有 .catch —— **逐个补 catch 是补症状**。
+    // 所有请求只有一个出口，就在这里判一次：Access 重定向后 res.url 会落在 cloudflareaccess.com。
+    // 这样 73 处（有没有 catch 都算）一次全覆盖。
+    (function guardSession(){
+      const _fetch = window.fetch.bind(window);
+      let warned = false;
+      window.fetch = async (...args) => {
+        const res = await _fetch(...args);
+        const expired = (res.redirected && /cloudflareaccess\.com|\/cdn-cgi\/access\//i.test(res.url))
+          || res.status === 401 || res.status === 403;
+        if (expired) {
+          if (!warned) { warned = true; showSessionExpired(); }
+          // 抛出去：有 .catch 的调用点会显示这句人话；没 .catch 的会静默失败，但横幅已经在了
+          throw new Error("会话已过期，请刷新页面重新登录");
+        }
+        return res;
+      };
+    })();
+    function showSessionExpired(){
+      if (document.getElementById('sess-expired')) return;
+      const d = document.createElement('div');
+      d.id = 'sess-expired';
+      d.innerHTML = `<b>⚠️ 登录会话已过期</b>　后台读不到数据了 —— 页面上看到的可能是旧的。`
+        + `<button onclick="location.reload()">刷新页面重新登录</button>`;
+      document.body.appendChild(d);
+    }
+
     const statusLabel = { new:"未打分", analyzed:"已打分", pending:"待审核", approved:"已批准",
       queued:"待发", sent:"已发送", replied:"已回复", no_reply:"无回复", unsubscribed:"已退订",
       bounced:"退信", ignored:"已忽略", blacklisted:"黑名单", won:"已下单" };
@@ -2203,6 +2244,7 @@
       $("#fu-delay").value = fu.delay_days;
       $("#fu-engaged-delay").value = fu.engaged_delay_days;
       $("#fu-max").value = fu.max_followups;
+      $("#fu-noreply").value = fu.no_reply_days;
       renderAutomation(c);
       $("#sendcfg-overlay").classList.add("show");
     };
@@ -2234,7 +2276,7 @@
         body:JSON.stringify({ daily_send_limit:Number($("#cfg-limit").value), company_name:$("#cfg-company").value, company_address:$("#cfg-address").value, company_website:$("#cfg-website").value, selling_points:$("#cfg-selling").value, chat_script:$("#cfg-chatscript").value,
           auto_approve_enabled:$("#cfg-auto-approve").checked, auto_send_enabled:$("#cfg-auto-send").checked, auto_send_daily_limit:Number($("#cfg-auto-limit").value) }) }).then(r=>r.json());
       await fetch("/api/settings/followup", { method:"POST", headers:{"content-type":"application/json"},
-        body:JSON.stringify({ enabled:$("#fu-enabled").checked, delay_days:Number($("#fu-delay").value), engaged_delay_days:Number($("#fu-engaged-delay").value), max_followups:Number($("#fu-max").value) }) });
+        body:JSON.stringify({ enabled:$("#fu-enabled").checked, delay_days:Number($("#fu-delay").value), engaged_delay_days:Number($("#fu-engaged-delay").value), max_followups:Number($("#fu-max").value), no_reply_days:Number($("#fu-noreply").value) }) });
       if (res.ok) _chatScript = $("#cfg-chatscript").value || DEFAULT_CHAT;
       $("#sendcfg-result").textContent = res.ok ? "已保存" : ("错误: "+(res.error||""));
     };

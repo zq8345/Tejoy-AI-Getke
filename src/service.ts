@@ -145,7 +145,8 @@ export async function analyzeLead(env: Env, lead: any, opts: { scoreOnly?: boole
     //   2) 成本 —— writeEmail 用的是贵模型(qwen3.7-max)，打分用的是便宜的(deepseek)。
     //      44 家只刷新组省掉一半 LLM 调用，且省的正好是贵的那一半。
     //   总工的原话也只要"新分数+新证据"，没要新草稿。
-    const email = opts.scoreOnly ? null : await writeEmail(env, profile, lead.company_name || "", siteText, score);
+    // 传 website 进去：公司名可能是脏的（搜索结果的页面标题），writeEmail 会用域名主体兜底称呼
+    const email = opts.scoreOnly ? null : await writeEmail(env, profile, lead.company_name || "", siteText, score, lead.website);
     const category = categorizeCustomerType(score.customer_type);
 
     // ⚠️ scoreOnly 时 recommended_email 用 `COALESCE(excluded.x, lead_analysis.x)` 保留原值 ——

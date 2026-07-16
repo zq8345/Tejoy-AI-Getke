@@ -1096,14 +1096,17 @@ app.get("/api/settings/followup", async (c) => {
     delay_days: Number(await getSetting(c.env, "followup_delay_days", "4")) || 4,
     engaged_delay_days: Number(await getSetting(c.env, "engaged_follow_up_delay_days", "2")) || 2,
     max_followups: Number(await getSetting(c.env, "followup_max", "1")) || 1,
+    // 顺带修①：跟进发满后再等几天没回应就归档。**做成设置不写死** —— 这是发信节奏参数，是 Joe 的旋钮。
+    no_reply_days: Number(await getSetting(c.env, "no_reply_days", "7")) || 7,
   });
 });
 app.post("/api/settings/followup", async (c) => {
-  const b = await c.req.json<{ enabled?: boolean; delay_days?: number; engaged_delay_days?: number; max_followups?: number }>().catch(() => ({}));
+  const b = await c.req.json<{ enabled?: boolean; delay_days?: number; engaged_delay_days?: number; max_followups?: number; no_reply_days?: number }>().catch(() => ({}));
   if (b.enabled != null) await setSetting(c.env, "followup_enabled", b.enabled ? "1" : "0");
   if (b.delay_days != null) await setSetting(c.env, "followup_delay_days", String(Math.max(1, Math.min(60, Number(b.delay_days) || 4))));
   if (b.engaged_delay_days != null) await setSetting(c.env, "engaged_follow_up_delay_days", String(Math.max(1, Math.min(60, Number(b.engaged_delay_days) || 2))));
   if (b.max_followups != null) await setSetting(c.env, "followup_max", String(Math.max(1, Math.min(5, Number(b.max_followups) || 1))));
+  if (b.no_reply_days != null) await setSetting(c.env, "no_reply_days", String(Math.max(1, Math.min(90, Number(b.no_reply_days) || 7))));
   return c.json({ ok: true });
 });
 // ---- 无回复跟进：手动跑一批 ----
@@ -1799,6 +1802,39 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   try { if (env.LARK_IMAP_PASS) { const r = await ingestReplies(env); replies = r.ingested || 0; } } catch (e) { console.error("replies:", e); }
   // 3.5) 无回复自动跟进（仅当开关开启；每轮最多 5 封，遵守每日上限）
   try { await sendFollowupBatch(env, 5); } catch (e) { console.error("followup:", e); }
+
+  // 3.55) 顺带修①「没回音出口」：跟进次数用尽 + 又过了 X 天还是没回应 → 归档。
+  //
+  // 为什么需要：现在这批人**没有出口** —— 跟进发完 followup_max 次后，它们永远躺在「已发送」格里，
+  // 既不会再被跟进（HAVING sent_count <= max 把它们排除了），也不会消失。格子只涨不消 =
+  // Joe 打开就看到一堆早已没戏的线索，真正该看的被淹掉。
+  //
+  // 归档到既有的 `ignored`（＝归档桶），**不新开状态**：
+  //   · `no_reply` 是我在批③A 删掉的孤儿状态，重新加它要动 ALLOWED_STATUS + 分组 + 徽章 + 左栏，
+  //     那不叫"顺带修"；
+  //   · 而且 D 正在重新设计状态（归档是个桶），新开一个 D 大概率要改名。
+  //   原因写进 notes（详情页看得见），别让"机器放弃了"和"Joe 主动忽略"完全分不出来。
+  //
+  // ⚠️ 只碰 status='sent'：已回复/成交/退订/黑名单/退信 天然不在范围内。
+  try {
+    const noReplyDays = Math.max(1, Number(await getSetting(env, "no_reply_days", "7")) || 7);
+    const maxFollowups = Math.max(1, Number(await getSetting(env, "followup_max", "3")) || 3);
+    const r = await env.DB.prepare(
+      `UPDATE leads SET status='ignored',
+              notes = substr(COALESCE(notes,'') || char(10) || '[' || datetime('now') || '] 自动归档·没回音：跟进已发满且 '
+                      || ? || ' 天无任何回应', -4000),
+              updated_at = datetime('now')
+        WHERE id IN (
+          SELECT l.id FROM leads l JOIN emails e ON e.lead_id=l.id AND e.status='sent'
+           WHERE l.status='sent'
+           GROUP BY l.id
+          HAVING COUNT(e.id) > ?                                   -- 跟进次数已用尽（初次信也算在 sent_count 里）
+             AND MAX(e.sent_at) <= datetime('now', ?)              -- 最后一封发出后又过了 X 天
+        )`
+      // ⚠️ noReplyDays 绑成**字符串**：绑 JS number 时 SQLite 会渲染成 "7.0 天"，Joe 看到的就是这行字
+    ).bind(String(noReplyDays), maxFollowups, `-${noReplyDays} days`).run();
+    if (r.meta.changes) console.log(`no-reply archive: ${r.meta.changes} 条（跟进发满 + ${noReplyDays} 天无回应）→ 已归档`);
+  } catch (e) { console.error("no-reply-archive:", e); }
   // 3.6) 关键词优化：按真实回复率重算权重（放发送/回复之后，让新数据参与本轮加权）
   try { await recomputeKeywordStats(env); } catch (e) { console.error("kwstats:", e); }
   // 3.7) 清理落地页频率限制表（>1 天的旧记录，防膨胀）

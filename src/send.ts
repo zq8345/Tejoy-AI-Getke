@@ -168,6 +168,28 @@ async function deliverEmail(env: Env, lead: any, subject: string, body: string, 
       "SELECT id FROM emails WHERE lead_id=? AND kind='initial' AND status IN ('sent','queued') LIMIT 1"
     ).bind(lead.id).first();
     if (dup) return { ok: false, id: lead.id, skipped: "已发过初次开发信（幂等跳过）" };
+
+    // ⭐ 顺带修③ 的真正要害：**幂等必须按邮箱地址，不能只按 lead_id**。
+    //
+    // 生产实证（2026-07-16 只读查出来的，不是设想）：同一个网站被录成了两行 ——
+    //   #163 2csyachtoutfitters.com  vs  #238 http://www.2CsYachtOutfitters.com
+    // 入库去重只比对了 website 字符串原文，**协议不同 + www + 大小写不同就漏了**。
+    // 两行的邮箱是同一个（2csyachtoutfitters@gmail.com），#163 已发信、#238 还躺在 new 里 →
+    // 重扫后一旦重开自动发送，**同一个地址会收到第二封一模一样的冷邮件** →
+    // 在收件人眼里就是垃圾邮件 → 退订/投诉。上面那条幂等按 lead_id 判，两行不同 id，**挡不住**。
+    // alliancenav.com（#165 已发 / #241 待发）是同样的情况。
+    //
+    // 这条按地址判，等于给"重复线索"这一整类兜底 —— 不管重复是怎么进来的（入库漏判、
+    // 人工导入、以后新的来源），同一个地址永远只会收到一封冷邮件。
+    const dupAddr = await env.DB.prepare(
+      `SELECT e.lead_id FROM emails e JOIN leads l2 ON l2.id = e.lead_id
+        WHERE lower(l2.email) = lower(?) AND e.kind='initial' AND e.status IN ('sent','queued')
+          AND e.lead_id != ? LIMIT 1`
+    ).bind(lead.email, lead.id).first<{ lead_id: number }>();
+    if (dupAddr) {
+      return { ok: false, id: lead.id,
+        skipped: `这个邮箱已经收过开发信了（线索 #${dupAddr.lead_id} —— 同一家被重复录入），不再发第二封` };
+    }
   }
   const senderEmail = env.SENDER_EMAIL || "hello@tejoy.net";
   const senderName = env.SENDER_NAME || "Tejoy";
