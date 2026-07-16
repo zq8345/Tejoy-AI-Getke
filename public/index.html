@@ -174,6 +174,11 @@
     .cd-ok { background:var(--blue); border:none; color:#fff; }
     .cd-ok:hover { filter:brightness(1.12); }
     .cd-ok.cd-danger { background:#c0392b; }
+    /* 批④ 详情页顶部「打开/点击」状态徽章（列表有 🔥/👀，详情页也要有） */
+    .dp-eng { font-size:11px; padding:3px 8px; border-radius:7px; border:1px solid var(--border); white-space:nowrap; }
+    .dp-eng-hot { background:#3a1f1e; color:#ff9c8f; border-color:#7a3128; }
+    .dp-eng-warm { background:#33280f; color:#e0b56a; border-color:#7a5f2f; }
+    .dp-eng-none { background:var(--bg); color:var(--muted); }
     /* #46b 底部决策条：一条淡边框 surface 簇（去掉全宽间隔，按钮聚成一块） */
     .dp-bottom { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:14px; padding:10px 12px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; }
     .dp-bottom .dp-sep { width:1px; align-self:stretch; background:var(--border); margin:2px 4px; }  /* 次要↔决策 之间的细分隔，不撑大空档 */
@@ -1223,6 +1228,13 @@
     function detailScoreBorder(s){ if(s==null) return "var(--border)"; if(s>=80) return "#2f9e6d"; if(s>=60) return "#c9820a"; return "#c0392b"; }
     function emailSubjectOf(rec){ const m=(rec||"").match(/^\s*subject:\s*(.+)$/im); return m?m[1].trim():""; }
     window.toggleEmailSec = () => { const b=$("#email-body"); if(!b) return; const open=b.style.display==="none"; b.style.display=open?"block":"none"; const c=$("#email-caret"); if(c)c.textContent=open?"▴":"▾"; };
+    // 批④：已发过的线索，「已发出的开发信」默认折叠，点标题展开
+    window.toggleSentEmail = (el) => {
+      const ta = document.getElementById('email-edit'); if(!ta) return;
+      const open = ta.style.display === 'none';
+      ta.style.display = open ? '' : 'none';
+      const c = el.querySelector('#se-caret'); if(c) c.textContent = open ? '（点标题收起）▴' : '（已折叠，点开看）▾';
+    };
     // 批A#1「安排跟进」：滚动到并高亮「下一步/跟进」输入框
     window.focusNextAction = () => { const el=document.getElementById('na-text'); if(!el) return; el.scrollIntoView({behavior:'smooth',block:'center'}); el.focus(); el.style.boxShadow='0 0 0 2px var(--blue)'; setTimeout(()=>{ el.style.boxShadow=''; }, 1300); };
 
@@ -1262,9 +1274,17 @@
       const scored = a.match_score != null;
       const canSend = scored && !!lead.email;
       // 批A#1 动作条按状态自适应
-      const preSend = ['new','analyzed','pending','approved','queued'].includes(lead.status);  // 未发→可批准/确认发送
-      const isSent = lead.status==='sent';       // 已发送/已查看→安排跟进/标记已下单，隐藏批准&确认发送
-      const isReplied = lead.status==='replied'; // 已回复→去回复箱
+      // 批④ 详情页 = 这一家下一步做什么：动作跟"这条线索所在的格"联动，跟阶段页同一个原则，不平铺所有动作。
+      const inReview  = ['new','analyzed','pending'].includes(lead.status);  // 待分析/待审批 → 主「批准」（缺邮箱时变「补邮箱」）
+      const inReady   = ['approved','queued'].includes(lead.status);          // 待发送 → 主「发送」
+      const isViewed  = lead.status==='sent' && !!lead.has_click;             // 已查看 → 主「趁热跟进」
+      const isSent    = lead.status==='sent' && !lead.has_click;              // 已发送 → 主「安排跟进」
+      const isReplied = lead.status==='replied';                              // 已回复 → 主「标记成交」+ 次「婉拒归档」
+      const preSend   = inReview || inReady;   // 未发出：确认发送/批准 这类才露出
+      // 主按钮走批③A1 同一条护栏（approveGateReason）：缺邮箱/未打分/<60 要说清原因，不另开口子
+      const gateReason = !lead.email ? "缺邮箱，不能批准（先补邮箱）"
+        : (a.match_score==null ? "未打分，不能批准（先 AI 分析）"
+        : (a.match_score < 60 ? `${a.match_score} 分 < 60 分门槛，不能批准` : ""));
       let ch={}; try{ ch = lead.channels ? JSON.parse(lead.channels) : {}; }catch{}
       const waD = waNumber(ch);
       // 联系方式行（每个后面一个「复制」小按钮）
@@ -1288,14 +1308,20 @@
               <span class="d-scoreblock ${detailScoreClass(a.match_score)}" style="padding:3px 10px;border-radius:7px">${scored?a.match_score+"/100":"未打分"}</span>
               ${a.customer_category?`<span class="pill ptype">${esc(a.customer_category)}</span>`:''}
               <span class="stg ${stg.cls}">${stg.badge}</span>
+              ${/* 批④：补「打开/点击」状态 —— 列表里有 🔥/👀，详情页反而找不到；对已发送的线索这是最该看的信息 */''}
+              ${lead.has_click ? `<span class="dp-eng dp-eng-hot" title="点过开发信里的链接＝强意向">🔥 点过链接</span>`
+                : lead.has_open ? `<span class="dp-eng dp-eng-warm" title="打开过开发信">👀 打开过</span>`
+                : (['sent','replied','won'].includes(lead.status) ? `<span class="dp-eng dp-eng-none" title="已发出，但还没看到打开/点击">📭 未打开</span>` : '')}
+              ${lead.has_followup ? `<span class="dp-eng dp-eng-none" title="已发过跟进信">↩︎ 已跟进</span>` : ''}
             </div>
           </div>
           <div class="dp-body">
             <div class="dp-left">
               ${scored && a.reason ? `<div class="dp-card"><div class="k muted">判断理由</div><div style="margin-top:3px">${esc(a.reason)}</div>${a.needed_products?`<div style="margin-top:7px">${esc(a.needed_products).split(/[、,，;；]/).map(p=>p.trim()).filter(Boolean).map(p=>`<span class="tag">${esc(p)}</span>`).join("")}</div>`:''}</div>` : ''}
               ${scored ? `<div class="dp-card">
-                <div class="k muted">✎ 推荐开发信</div>
-                <textarea id="email-edit" style="min-height:230px;margin-top:6px">${esc(a.recommended_email)||""}</textarea>
+                ${/* 批④：已发过的线索把「推荐开发信」折叠 —— 信都发了，不该再占最大面积 */''}
+                <div class="k muted" ${preSend?'':`style="cursor:pointer" onclick="toggleSentEmail(this)"`}>✎ ${preSend?'推荐开发信':'已发出的开发信 <span class="hint" id="se-caret">（已折叠，点开看）▾</span>'}</div>
+                <textarea id="email-edit" style="min-height:230px;margin-top:6px${preSend?'':';display:none'}">${esc(a.recommended_email)||""}</textarea>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:7px">
                   ${preSend ? `<button class="btn-green" onclick="confirmSend(${lead.id})">✅ 确认发送</button>` : ''}
                   <button class="btn-chat" data-company="${esc(lead.company_name)||''}" onclick="copyScript(this)">📋 复制话术</button>
@@ -1330,14 +1356,23 @@
             </div>
           </div>
           <div class="dp-bottom">
+            <!-- 次要区：重新AI分析 / 加黑名单 收在这儿，不跟主操作抢 -->
             <button class="btn-ghost" onclick="analyzeOne(${lead.id})">${scored?"重新 AI 分析":"🔍 AI 分析"}</button>
-            ${!lead.email?`<button onclick="findMail(${lead.id},false)">找邮箱(免费)</button><button class="btn-amber" onclick="findMail(${lead.id},true)">Hunter找(1积分)</button>`:""}
             <span class="dp-sep"></span>
-            ${preSend ? `<button class="btn-green dp-primary" ${canSend?"":"disabled title=\"需先AI打分且有邮箱\""} onclick="approveAndReview(${lead.id})">✅ 批准发送</button>`
-              : isReplied ? `<button class="btn-green dp-primary" onclick="gotoGroup('replied')">📥 去已回复</button>`
-              : isSent ? `<button class="btn-green dp-primary" onclick="focusNextAction()">📅 安排跟进</button>` : ''}
-            ${lead.status!=='won'?`<button class="btn-won" onclick="setStatus(${lead.id},'won')">标记已下单</button>`:""}
-            <button class="btn-amber" onclick="setStatus(${lead.id},'ignored')">忽略</button>
+            <!-- 主操作：跟这条线索所在的格联动 -->
+            ${inReview ? (!lead.email
+                ? `<button class="btn-green dp-primary" onclick="findMail(${lead.id},false)">✉️ 补邮箱</button>
+                   <button class="btn-amber" onclick="findMail(${lead.id},true)" title="Hunter 按域名查，每家 1 积分">Hunter 找(1积分)</button>`
+                : `<button class="btn-green dp-primary" ${gateReason?`disabled title="${esc(gateReason)}"`:""} onclick="approveAndReview(${lead.id})">✅ 批准</button>`)
+              : inReady ? `<button class="btn-green dp-primary" ${gateReason?`disabled title="${esc(gateReason)}"`:""} onclick="confirmSend(${lead.id})">📤 发送</button>`
+              : isViewed ? `<button class="btn-amber dp-primary" onclick="draftWarm(${lead.id})">🔥 趁热跟进</button>`
+              : isSent ? `<button class="btn-green dp-primary" onclick="focusNextAction()">📅 安排跟进</button>`
+              : isReplied ? `<button class="btn-won dp-primary" onclick="setStatus(${lead.id},'won')">🤝 标记成交</button>
+                            <button class="btn-amber" onclick="setStatus(${lead.id},'ignored')">婉拒归档</button>`
+              : ''}
+            ${gateReason && inReview && lead.email ? `<span class="hint" style="color:var(--amber)">⚠️ ${esc(gateReason)}</span>` : ''}
+            ${(!isReplied && lead.status!=='won') ? `<button class="btn-won" onclick="setStatus(${lead.id},'won')">标记已下单</button>` : ''}
+            ${!isReplied ? `<button class="btn-amber" onclick="setStatus(${lead.id},'ignored')">忽略</button>` : ''}
             <button class="dp-danger-weak" onclick="setStatus(${lead.id},'blacklisted')" title="停止联系并拉黑">加黑名单</button>
           </div>
         </div>`;
