@@ -4,7 +4,7 @@ import { parseCsv, mapRowToLead } from "./csv";
 import { analyzeLead, getProfile, DEFAULT_PROFILE } from "./service";
 import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese, isTrustedDirectorySource } from "./openrouter";
 import { scrapeSite } from "./scrape";
-import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed } from "./send";
+import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed, autoSentToday, getBreakerStatus, BREAKER_WINDOW, BREAKER_THRESHOLD } from "./send";
 import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
 import { findLeadEmail } from "./findemail";
 import { ingestReplies } from "./replies";
@@ -126,6 +126,9 @@ async function getBacklog(env: Env): Promise<{ unscored: number; noEmail: number
 // 注意：index.ts 是 Worker 入口模块，顶层 export 的非函数值会被运行时当成 handler 校验并报
 // "Incorrect type for map entry"（dry-run 查不出、只有真启动才报）→ 这里必须是模块内常量，不能 export。
 const APPROVE_MIN_SCORE = 60;
+// 自动批准门槛（Joe 拍板 ≥70 有邮箱就自动批准自动发）。人工闸只管 60-69 的模糊地带。
+// 注意这**不是**另一条护栏：自动批准仍然要过 approveGateReason，这里只是更高的入选门槛。
+const AUTO_APPROVE_MIN = 70;
 function approveGateReason(email: string | null, score: number | null): string | null {
   if (!email || !String(email).trim()) return "缺邮箱，不能批准（先补邮箱）";
   if (score == null) return "未打分，不能批准（先 AI 分析）";
@@ -970,6 +973,7 @@ const DEFAULT_CHAT_SCRIPT =
 
 // ---- 发信设置（每日上限 + 公司名 + 合规地址 + 卖点 + 一键开聊话术）----
 app.get("/api/settings/sending", async (c) => {
+  const br = await getBreakerStatus(c.env);
   return c.json({
     daily_send_limit: Number(await getSetting(c.env, "daily_send_limit", "15")) || 15,
     company_name: await getSetting(c.env, "company_name", "TEJOY"),
@@ -977,11 +981,42 @@ app.get("/api/settings/sending", async (c) => {
     company_website: await getSetting(c.env, "company_website", c.env.SITE_URL || "https://tejoy.com"),
     selling_points: await getSetting(c.env, "selling_points", DEFAULT_SELLING_POINTS),
     chat_script: await getSetting(c.env, "chat_script", DEFAULT_CHAT_SCRIPT),
+    // 自动化三开关 + 熔断状态（前端要能看能关；熔断后必须显眼告诉 Joe 为什么停了）
+    auto_approve_enabled: (await getSetting(c.env, "auto_approve_enabled", "1")) === "1",
+    auto_send_enabled: (await getSetting(c.env, "auto_send_enabled", "1")) === "1",
+    auto_send_daily_limit: Number(await getSetting(c.env, "auto_send_daily_limit", "15")) || 15,
+    auto_approve_min: AUTO_APPROVE_MIN,
+    auto_sent_today: await autoSentToday(c.env),
+    breaker: {
+      window: br.window, unsubs: br.unsubs,
+      rate: Math.round(br.rate * 1000) / 10,          // 百分数，一位小数
+      enoughSample: br.enoughSample,
+      windowSize: BREAKER_WINDOW,
+      thresholdPct: BREAKER_THRESHOLD * 100,
+      trippedAt: await getSetting(c.env, "auto_send_tripped_at", ""),
+      tripReason: await getSetting(c.env, "auto_send_trip_reason", ""),
+    },
   });
 });
 app.post("/api/settings/sending", async (c) => {
-  const b = await c.req.json<{ daily_send_limit?: number; company_name?: string; company_address?: string; company_website?: string; selling_points?: string; chat_script?: string }>().catch(() => ({}));
+  const b = await c.req.json<{ daily_send_limit?: number; company_name?: string; company_address?: string; company_website?: string; selling_points?: string; chat_script?: string; auto_approve_enabled?: boolean; auto_send_enabled?: boolean; auto_send_daily_limit?: number }>().catch(() => ({}));
   if (b.daily_send_limit != null) await setSetting(c.env, "daily_send_limit", String(Math.max(1, Math.min(500, Number(b.daily_send_limit) || 15))));
+  if (b.auto_approve_enabled != null) await setSetting(c.env, "auto_approve_enabled", b.auto_approve_enabled ? "1" : "0");
+  if (b.auto_send_daily_limit != null) await setSetting(c.env, "auto_send_daily_limit", String(Math.max(1, Math.min(200, Number(b.auto_send_daily_limit) || 15))));
+  if (b.auto_send_enabled != null) {
+    const was = (await getSetting(c.env, "auto_send_enabled", "1")) === "1";
+    await setSetting(c.env, "auto_send_enabled", b.auto_send_enabled ? "1" : "0");
+    // 手动重开 = Joe 说"我查过了、改过了" → 清熔断印记 + **把熔断窗口的起点挪到此刻**。
+    // ⚠️ 不挪起点的话熔断**不可恢复**：停了之后窗口再也不进新数据、永远卡在那个超标率，
+    //    Joe 一重开，下一轮 cron 立刻拿同一批老数据再熔断一次，一封新信都发不出去。
+    //    挪起点 ≠ 自动恢复（总工禁止的那个）：没有 Joe 手动点这一下，永远不会重开；
+    //    重开之后窗口从 0 开始攒，攒够 30 封新的再判 —— 拿改之后的数据判，不拿旧账再判一次。
+    if (b.auto_send_enabled && !was) {
+      await setSetting(c.env, "auto_send_resumed_at", new Date().toISOString().replace("T", " ").slice(0, 19));
+      await setSetting(c.env, "auto_send_tripped_at", "");
+      await setSetting(c.env, "auto_send_trip_reason", "");
+    }
+  }
   if (b.company_name != null) await setSetting(c.env, "company_name", b.company_name.trim());
   if (b.company_address != null) await setSetting(c.env, "company_address", b.company_address.trim());
   if (b.company_website != null) await setSetting(c.env, "company_website", b.company_website.trim());
@@ -1339,7 +1374,7 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 // Cron 定时任务：自动找客户 + 自动分析新线索（7×24 运行）
 async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-  let inserted = 0, analyzed = 0, replies = 0;
+  let inserted = 0, analyzed = 0, replies = 0, autoApproved = 0, autoSent = 0;
   const highScore: { company: string; score: number; category?: string }[] = [];
   let hsMin = 80;
   try { hsMin = Number(await getSetting(env, "notify_high_score_min", "80")) || 80; } catch (e) { console.error("hsMin:", e); }
@@ -1406,6 +1441,68 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
     if (okThisBatch === 0 && hardFail > 0) break;
   }
   if (fetchSkipped) console.log(`analyze: ${fetchSkipped} 条因官网抓不到跳过（未打分，等下轮重试）`);
+
+  // 2.5) 自动批准：≥70 且有邮箱 → approved（Joe 拍板）。人工闸从此只管 60-69 的模糊地带。
+  //  · **走 approveGateReason 那条既有护栏**，不另开判断口子 —— 它已经管着"有邮箱+已打分+≥60"，
+  //    这里只是把门槛从 60 提到 70（AUTO_APPROVE_MIN），护栏本身一个字没动。
+  //  · 60-69 → 留 analyzed 等人工。
+  //  · <60 → **不动**：Joe 用「<60 一键全忽略」自己清，我们不替他做销毁性决定。
+  try {
+    if ((await getSetting(env, "auto_approve_enabled", "1")) === "1") {
+      const cands = (await env.DB.prepare(
+        `SELECT l.id, l.email, a.match_score FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
+          WHERE l.status='analyzed' AND a.match_score >= ? AND l.email IS NOT NULL AND l.email != ''
+          ORDER BY a.match_score DESC, l.id ASC LIMIT 50`
+      ).bind(AUTO_APPROVE_MIN).all()).results as any[];
+      for (const c of cands) {
+        // 同一条护栏：任何一项不过（缺邮箱/未打分/<60）都不批准，理由照打
+        const why = approveGateReason(c.email, c.match_score ?? null);
+        if (why) { console.log(`auto-approve skip #${c.id}: ${why}`); continue; }
+        const r = await env.DB.prepare(
+          "UPDATE leads SET status='approved', updated_at=datetime('now') WHERE id=? AND status='analyzed'"
+        ).bind(c.id).run();
+        if (r.meta.changes === 1) autoApproved++;
+      }
+      if (autoApproved) console.log(`auto-approve: ${autoApproved} 条 ≥${AUTO_APPROVE_MIN}分有邮箱 → 待发送`);
+    } else console.log("auto-approve skipped: auto_approve_enabled=0");
+  } catch (e) { console.error("auto-approve:", e); }
+
+  // 2.6) 熔断检查 → 自动发送。**熔断必须在发送之前**：先看伤口再决定要不要继续开枪。
+  try {
+    const br = await getBreakerStatus(env);
+    if (br.shouldTrip && (await getSetting(env, "auto_send_enabled", "1")) === "1") {
+      // 只熔断自动发送：auto_approve 继续跑、手动发送不受影响。熔断后**不自动恢复**，必须 Joe 手动开——
+      // 自动恢复会退化成"烧一轮停一下再烧一轮"。
+      await setSetting(env, "auto_send_enabled", "0");
+      await setSetting(env, "auto_send_tripped_at", new Date().toISOString());
+      await setSetting(env, "auto_send_trip_reason", `最近 ${br.window} 封自动开发信里 ${br.unsubs} 封退订 = ${(br.rate * 100).toFixed(1)}%`);
+      console.error(`⚠️ 熔断：${br.unsubs}/${br.window} = ${(br.rate * 100).toFixed(1)}% ≥ 15% → auto_send_enabled=0`);
+      try {
+        if (larkConfigured(env)) {
+          await larkSend(env, { msg_type: "text", content: { text:
+            `TEJOY ⚠️ 自动发送已熔断\n最近 ${br.window} 封自动开发信里 ${br.unsubs} 封退订 = ${(br.rate * 100).toFixed(1)}%（阈值 15%）。\n` +
+            `已自动停止**自动发送**；自动批准与手动发送不受影响。\n请检查线索来源与开发信内容，确认后到后台手动重开（不会自动恢复）。` } });
+        }
+      } catch { /* 通知失败不影响熔断本身 */ }
+    }
+    const autoOn = (await getSetting(env, "auto_send_enabled", "1")) === "1";
+    if (!autoOn) {
+      console.log("auto-send skipped: auto_send_enabled=0" + (br.shouldTrip ? "（本轮刚熔断）" : ""));
+    } else {
+      // 自动这条路自己的每日上限（默认 15，**不复用手动的 daily_send_limit=50**）。
+      // 全局 50 的总闸由 sendApprovedBatch 内的 sentToday() 统一把守 —— 两个上限取更紧的那个，
+      // 结构上不可能突破 50。详见 send.ts sendApprovedBatch 的注释。
+      const autoLimit = Number(await getSetting(env, "auto_send_daily_limit", "15")) || 15;
+      const autoRoom = Math.max(0, autoLimit - (await autoSentToday(env)));
+      const take = Math.min(autoRoom, 5); // 每轮最多 5 封，摊到 4 次 cron，别一轮打光
+      if (take > 0) {
+        const r = await sendApprovedBatch(env, take, undefined, true);  // ← 同一条 sendApprovedBatch，autoSent=true
+        autoSent = r.sent;
+        if (autoSent) console.log(`auto-send: 发出 ${autoSent} 封（今日自动上限 ${autoLimit}，全局 ${r.dailyLimit}，今日已发 ${r.sentToday}）`);
+      } else console.log(`auto-send: 今日自动额度已用尽（${autoLimit}/天）`);
+    }
+  } catch (e) { console.error("auto-send:", e); }
+
   // 3) 拉取并处理客户回复（P4；热回复会在 ingestReplies 内实时推飞书）
   try { if (env.LARK_IMAP_PASS) { const r = await ingestReplies(env); replies = r.ingested || 0; } } catch (e) { console.error("replies:", e); }
   // 3.5) 无回复自动跟进（仅当开关开启；每轮最多 5 封，遵守每日上限）

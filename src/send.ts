@@ -97,8 +97,67 @@ async function sentToday(env: Env): Promise<number> {
   return r?.n ?? 0;
 }
 
+/** 今天**自动**发出去几封（供 auto_send_daily_limit 用；与全局 daily_send_limit 是"与"的关系） */
+export async function autoSentToday(env: Env): Promise<number> {
+  const r = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM emails WHERE status='sent' AND auto_sent=1 AND date(sent_at)=date('now')"
+  ).first<{ n: number }>();
+  return r?.n ?? 0;
+}
+
+// ⭐ 熔断器：自动发送的前提条件，不是附加功能。
+// 实证：40 封手动 → 12 退订（30%）。手动时这个问题每天发生一次；自动之后 7×24 发生。
+// 按 15/天自动发就是每天 ~4-5 个退订，Resend 会标记账号、收件方开始把 hello@tejoy.net 判垃圾。
+export const BREAKER_WINDOW = 30;      // 窗口：最近 30 封**自动发出的初次开发信**
+export const BREAKER_THRESHOLD = 0.15; // 退订占比 ≥15% 即熔断
+
+export interface BreakerStatus {
+  window: number;        // 窗口内实际有几封（<30 说明样本不足）
+  unsubs: number;
+  rate: number;          // 0~1
+  enoughSample: boolean;
+  shouldTrip: boolean;
+}
+
+/**
+ * 只统计**自动发出的初次开发信**：
+ *  · 手动发的不算 —— Joe 手动挑着发的那批退订率高低，跟"自动发送该不该停"是两回事
+ *  · 跟进信不算 —— 窗口口径是初次触达
+ * 退订判定用 **suppressed_emails(reason='unsubscribe')** 为主 + leads.status 兜底：
+ *  按 M3 的原则，压制名单是持久记录、不依赖可变的 status（防"两跳洗白"后统计失真）。
+ *
+ * ⭐ 窗口从 `auto_send_resumed_at`（Joe 上次手动重开的时刻）之后算起 —— 这条不加的话熔断**不可恢复**：
+ *    熔断后自动发送停了 → 窗口再也不进新数据 → 永远卡在那个 30% →
+ *    Joe 一重开，下一轮 cron 立刻拿同一批老数据再熔断一次，一封新信都发不出去。
+ *    重开＝Joe 说"我查过了、改过了"，那就该拿**改之后的新数据**重新判，而不是拿旧账再判他一次。
+ *    这不是"自动恢复"（总工明确禁止的那个）：没有 Joe 手动点，永远不会重开。
+ */
+export async function getBreakerStatus(env: Env): Promise<BreakerStatus> {
+  const since = await getSetting(env, "auto_send_resumed_at", "");
+  const row = await env.DB.prepare(
+    `WITH w AS (
+       SELECT e.lead_id FROM emails e
+       WHERE e.auto_sent=1 AND e.kind='initial' AND e.status='sent' AND e.sent_at IS NOT NULL
+         AND (? = '' OR e.sent_at > ?)
+       ORDER BY e.sent_at DESC LIMIT ?
+     )
+     SELECT COUNT(*) AS n,
+            SUM(CASE WHEN l.status='unsubscribed'
+                       OR lower(COALESCE(l.email,'')) IN (SELECT email FROM suppressed_emails WHERE reason='unsubscribe')
+                     THEN 1 ELSE 0 END) AS u
+     FROM w JOIN leads l ON l.id = w.lead_id`
+  ).bind(since, since, BREAKER_WINDOW).first<{ n: number; u: number }>();
+  const window = row?.n ?? 0;
+  const unsubs = row?.u ?? 0;
+  const enoughSample = window >= BREAKER_WINDOW;
+  const rate = window > 0 ? unsubs / window : 0;
+  // ⚠️ 样本不足**不熔断**：这跟数据看板 n<50 只显示计数、不显示率是同一条原则，别在这儿破例。
+  //    5 封里 2 封退订说明不了任何事，据此停掉自动发送只会变成随机噪声开关。
+  return { window, unsubs, rate, enoughSample, shouldTrip: enoughSample && rate >= BREAKER_THRESHOLD };
+}
+
 // 发信核心：落 queued 记录 → 调 Resend → 回写 email 状态。不改 lead 状态（调用方决定）。
-async function deliverEmail(env: Env, lead: any, subject: string, body: string, kind: "initial" | "followup" | "confirmation"): Promise<SendOutcome> {
+async function deliverEmail(env: Env, lead: any, subject: string, body: string, kind: "initial" | "followup" | "confirmation", autoSent = false): Promise<SendOutcome> {
   // M3 终极闸：持久压制名单命中即 skip（不依赖 status，两跳洗白/重导入也拦得住）
   if (await isEmailSuppressed(env, lead.email)) {
     return { ok: false, id: lead.id, skipped: "邮箱在压制名单，不发送" };
@@ -121,8 +180,8 @@ async function deliverEmail(env: Env, lead: any, subject: string, body: string, 
   const unsubUrl = `${appUrl}/u/${token}`;
 
   const ins = await env.DB.prepare(
-    "INSERT INTO emails (lead_id, subject, body, status, kind, unsubscribe_token, created_at) VALUES (?, ?, ?, 'queued', ?, ?, datetime('now'))"
-  ).bind(lead.id, subject, body, kind, token).run();
+    "INSERT INTO emails (lead_id, subject, body, status, kind, unsubscribe_token, auto_sent, created_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, datetime('now'))"
+  ).bind(lead.id, subject, body, kind, token, autoSent ? 1 : 0).run();
   const emailId = ins.meta.last_row_id;
 
   try {
@@ -159,7 +218,7 @@ async function deliverEmail(env: Env, lead: any, subject: string, body: string, 
 }
 
 // 发送单条初次开发信（要求 lead 已 approved 且有 analysis.recommended_email）
-export async function sendLead(env: Env, lead: any): Promise<SendOutcome> {
+export async function sendLead(env: Env, lead: any, autoSent = false): Promise<SendOutcome> {
   if (!env.RESEND_API_KEY) return { ok: false, id: lead.id, error: "缺少 RESEND_API_KEY（.dev.vars / wrangler secret）" };
   if (!lead.email) return { ok: false, id: lead.id, skipped: "无邮箱" };
   if (SUPPRESSED_STATUSES.has(lead.status)) return { ok: false, id: lead.id, skipped: `压制名单(${lead.status})，不发送` };
@@ -170,7 +229,7 @@ export async function sendLead(env: Env, lead: any): Promise<SendOutcome> {
   if (!analysis?.recommended_email) return { ok: false, id: lead.id, skipped: "无 AI 开发信（先分析）" };
 
   const { subject, body } = parseEmail(analysis.recommended_email);
-  const out = await deliverEmail(env, lead, subject, body, "initial");
+  const out = await deliverEmail(env, lead, subject, body, "initial", autoSent);
   if (out.ok) {
     await env.DB.prepare("UPDATE leads SET status='sent', updated_at=datetime('now') WHERE id=?").bind(lead.id).run();
   }
@@ -266,7 +325,17 @@ export async function sendFollowupBatch(env: Env, requested: number, ids?: numbe
 // 批量发送已批准线索：按分数从高到低，遵守每日上限
 // ids 传入时只发这些选中的（仍受下面全部闸门约束：status='approved' + match_score>=60 + 每日上限 +
 // 原子取批 + deliverEmail 幂等 + isEmailSuppressed 压制名单）——"发送选中"复用同一条路径，绝不另开绕过口。
-export async function sendApprovedBatch(env: Env, requested: number, ids?: number[]): Promise<{ processed: number; sent: number; results: SendOutcome[]; capReached?: boolean; dailyLimit: number; sentToday: number }> {
+// autoSent=true：这一批算"自动发送"（标记进 emails.auto_sent，供每日上限与熔断器窗口统计）。
+// ⭐ 每日上限怎么不打架（总工点名要说明的那条）：
+//   · `daily_send_limit`（生产=50）是**全局总闸**：下面的 sentToday() 数的是**今天所有 status='sent' 的信**
+//     （手动 + 自动 + 跟进 + 落地确认信，一个不落），room = 50 - already。
+//     所以只要自动发送**也走这个函数**（总工的硬要求），手动+自动+跟进加起来**在结构上就不可能突破 50**——
+//     不需要为自动单独扣减，共享计数本身就是闸。
+//   · `auto_send_daily_limit`（默认 15）是**自动这条路自己的额外上限**，由调用方（cron）先算好
+//     autoRoom = 15 - 今天已自动发的，再把 requested 传进来。两个上限是**与**的关系，取更紧的那个生效。
+//   · 结果：自动 ≤15/天，且 全部 ≤50/天。自动跑在 cron 里会先占额度，手动还剩 ≥35 —— 这是有意的：
+//     自动的东西要跑得慢、出事损失小一格。
+export async function sendApprovedBatch(env: Env, requested: number, ids?: number[], autoSent = false): Promise<{ processed: number; sent: number; results: SendOutcome[]; capReached?: boolean; dailyLimit: number; sentToday: number }> {
   const dailyLimit = Number(await getSetting(env, "daily_send_limit", "15")) || 15;
   const already = await sentToday(env);
   const room = Math.max(0, dailyLimit - already);
@@ -295,7 +364,7 @@ export async function sendApprovedBatch(env: Env, requested: number, ids?: numbe
       "UPDATE leads SET status='queued', updated_at=datetime('now') WHERE id=? AND status='approved'"
     ).bind(lead.id).run();
     if (claim.meta.changes !== 1) { results.push({ ok: false, id: lead.id, skipped: "并发已被取走" }); continue; }
-    const out = await sendLead(env, { ...lead, status: "queued" });   // sendLead 成功时置 sent
+    const out = await sendLead(env, { ...lead, status: "queued" }, autoSent);   // sendLead 成功时置 sent
     if (!out.ok) {
       // 未成功发送 → 退回 approved（保持与原语义一致：非成功线索留在待发送池，可重试）
       await env.DB.prepare("UPDATE leads SET status='approved' WHERE id=? AND status='queued'").bind(lead.id).run();

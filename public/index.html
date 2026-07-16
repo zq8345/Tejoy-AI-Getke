@@ -80,6 +80,14 @@
     .st-new { background:#33383f; color:#cfd6e2; }
     /* 待分析：机器还没处理完，人不用做什么 → 比「待审核」(等你审) 更暗、更安静，别抢注意力 */
     .st-todo { background:#2b2f36; color:#8c94a3; }
+    /* 熔断横幅：自动发送被停了而 Joe 不知道，比不停还糟 → 这里要抢注意力 */
+    .brk-banner { background:#3a1f1e; border:1px solid #7a3b36; color:#ffb3ab; border-radius:8px;
+      padding:10px 12px; margin:10px 0; font-size:13px; line-height:1.6; }
+    .brk-banner b { color:#ff8a7d; }
+    .auto-box { border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin:10px 0; }
+    .auto-title { font-size:13px; font-weight:600; margin-bottom:7px; }
+    .auto-row { display:flex; align-items:center; gap:8px; padding:4px 0; font-size:13px; cursor:pointer; }
+    .auto-row input[type=checkbox] { margin:0; flex-shrink:0; }
     /* 渠道独立列：窄、居中；表加 min-width 让 12 列超宽时走横向滚动而非压扁 */
     .chcol { width:120px; }
     th.chcol { text-align:left; overflow:hidden; text-overflow:ellipsis; }
@@ -568,8 +576,27 @@
       <button class="modal-x" type="button" onclick="this.closest('.overlay').classList.remove('show')" title="关闭">×</button>
       <h2>发信设置</h2>
       <p class="hint">养域期建议每日上限从 10–20 起步，逐周提高。公司地址是冷邮件合规（CAN-SPAM）要求，会出现在每封信页脚，请填真实地址。</p>
+
+      <!-- 熔断横幅：只在熔断时出现，必须显眼 —— 自动发送停了而 Joe 不知道，比不停还糟 -->
+      <div id="brk-banner" class="brk-banner" style="display:none"></div>
+
+      <!-- 自动化：Joe 拍板「≥70有邮箱自动批准+自动发」，人工闸只管 60-69 -->
+      <div class="auto-box">
+        <div class="auto-title">🤖 自动化</div>
+        <label class="auto-row"><input type="checkbox" id="cfg-auto-approve">
+          <span><b>自动批准</b> <span class="hint">≥<span id="cfg-auto-min">70</span> 分且有邮箱 → 直接进「待发送」；60–69 分仍留给你人工审</span></span></label>
+        <label class="auto-row"><input type="checkbox" id="cfg-auto-send">
+          <span><b>自动发送</b> <span class="hint">后台每 6h 自动发已批准的；退订率过高会自动熔断</span></span></label>
+        <div class="auto-row" style="padding-left:24px">
+          <span class="hint">自动发送每日上限</span>
+          <input id="cfg-auto-limit" type="number" min="1" max="200" style="width:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 6px;border-radius:6px;margin-left:8px">
+          <span class="hint" id="cfg-auto-used" style="margin-left:8px"></span>
+        </div>
+        <div class="auto-row" style="padding-left:24px"><span class="hint" id="cfg-brk-stat"></span></div>
+      </div>
+
       <div class="kv" style="grid-template-columns:110px 1fr">
-        <div class="k">每日发信上限</div><div><input id="cfg-limit" type="number" min="1" max="500" style="width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
+        <div class="k">每日发信上限</div><div><input id="cfg-limit" type="number" min="1" max="500" style="width:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"><span class="hint" style="margin-left:8px">手动+自动+跟进 全部共用这个总闸</span></div>
         <div class="k">公司名</div><div><input id="cfg-company" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
         <div class="k">官网</div><div><input id="cfg-website" placeholder="https://tejoy.com" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:6px"></div>
       </div>
@@ -1892,13 +1919,36 @@
       $("#fu-delay").value = fu.delay_days;
       $("#fu-engaged-delay").value = fu.engaged_delay_days;
       $("#fu-max").value = fu.max_followups;
+      renderAutomation(c);
       $("#sendcfg-overlay").classList.add("show");
     };
+    // 自动化区 + 熔断状态。熔断了而 Joe 不知道，比不熔断还糟 —— 所以停了必须显眼说清为什么。
+    function renderAutomation(c){
+      $("#cfg-auto-approve").checked = c.auto_approve_enabled !== false;
+      $("#cfg-auto-send").checked = c.auto_send_enabled !== false;
+      $("#cfg-auto-limit").value = c.auto_send_daily_limit || 15;
+      $("#cfg-auto-min").textContent = c.auto_approve_min || 70;
+      $("#cfg-auto-used").textContent = `（今日已自动发 ${c.auto_sent_today || 0} 封）`;
+      const b = c.breaker || {};
+      // 退订率：样本不足就只报计数、不报率 —— 与数据看板 n<50 的口径同一条原则，别在这儿破例
+      $("#cfg-brk-stat").textContent = b.enoughSample
+        ? `熔断监控：最近 ${b.window} 封自动开发信里 ${b.unsubs} 封退订 = ${b.rate}%（阈值 ${b.thresholdPct}%）`
+        : `熔断监控：样本 ${b.window||0}/${b.windowSize||30} 封，不足 ${b.windowSize||30} 封不做判断（已退订 ${b.unsubs||0} 封）`;
+      const banner = $("#brk-banner");
+      if (b.trippedAt) {
+        banner.style.display = "";
+        banner.innerHTML = `<b>⚠️ 自动发送已被熔断，现在没有在自动发信</b><br>`
+          + `原因：${esc(b.tripReason || "退订率超阈值")}<br>`
+          + `熔断时间：${esc(String(b.trippedAt).slice(0,19).replace("T"," "))}<br>`
+          + `自动批准与手动发送不受影响。<b>不会自动恢复</b> —— 请先检查线索来源与开发信内容，确认后勾上「自动发送」再保存。`;
+      } else banner.style.display = "none";
+    }
     $("#cancel-sendcfg").onclick = () => $("#sendcfg-overlay").classList.remove("show");
     $("#save-sendcfg").onclick = async () => {
       $("#sendcfg-result").textContent = "保存中…";
       const res = await fetch("/api/settings/sending", { method:"POST", headers:{"content-type":"application/json"},
-        body:JSON.stringify({ daily_send_limit:Number($("#cfg-limit").value), company_name:$("#cfg-company").value, company_address:$("#cfg-address").value, company_website:$("#cfg-website").value, selling_points:$("#cfg-selling").value, chat_script:$("#cfg-chatscript").value }) }).then(r=>r.json());
+        body:JSON.stringify({ daily_send_limit:Number($("#cfg-limit").value), company_name:$("#cfg-company").value, company_address:$("#cfg-address").value, company_website:$("#cfg-website").value, selling_points:$("#cfg-selling").value, chat_script:$("#cfg-chatscript").value,
+          auto_approve_enabled:$("#cfg-auto-approve").checked, auto_send_enabled:$("#cfg-auto-send").checked, auto_send_daily_limit:Number($("#cfg-auto-limit").value) }) }).then(r=>r.json());
       await fetch("/api/settings/followup", { method:"POST", headers:{"content-type":"application/json"},
         body:JSON.stringify({ enabled:$("#fu-enabled").checked, delay_days:Number($("#fu-delay").value), engaged_delay_days:Number($("#fu-engaged-delay").value), max_followups:Number($("#fu-max").value) }) });
       if (res.ok) _chatScript = $("#cfg-chatscript").value || DEFAULT_CHAT;
