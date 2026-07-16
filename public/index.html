@@ -201,6 +201,11 @@
     .cd-body b { color:#bcdcff; font-weight:600; }                             /* 把"对哪 N 条做什么"顶出来 */
     .cd-li { padding-left:2px; color:var(--muted); font-size:12.5px; line-height:1.75; }   /* 「· 」次要说明降一级 */
     .cd-warn { color:var(--amber); font-weight:600; margin-top:4px; }
+    /* 批⑥C uiPick 单选：每项一行、点了就是选中（不需要再点确认——多一步没意义） */
+    .cd-picks { display:flex; flex-direction:column; gap:6px; margin:10px 0 14px; }
+    .cd-pick { text-align:left; padding:9px 12px; border-radius:7px; font-size:13px; cursor:pointer;
+      background:var(--bg); border:1px solid var(--border); color:var(--text); transition:border-color .15s, background .15s; }
+    .cd-pick:hover, .cd-pick:focus { border-color:var(--blue); background:#20262e; outline:none; }
     .cd-actions { display:flex; justify-content:flex-end; gap:10px; align-items:center; }
     .cd-actions button { padding:7px 16px; border-radius:7px; font-size:13px; cursor:pointer; transition:filter .15s ease, border-color .15s ease; }
     .cd-cancel { background:var(--bg); border:1px solid var(--border); color:var(--text); }
@@ -1454,6 +1459,8 @@
       //   现在：new → 主「🔍 AI 分析」。分析本身还会顺带从官网抓邮箱，所以它也先于「补邮箱」。
       const isUnscored = lead.status === 'new';                               // 待分析 → 主「AI 分析」
       const inReview  = ['analyzed','pending'].includes(lead.status);         // 待审批 → 主「批准」（缺邮箱时变「补邮箱」）
+      // 批⑥C：<60 = 翻牌堆那批（机器扔掉的）→ 主按钮该是「手动发这家」而不是灰着的「批准」
+      const belowLine = scored && a.match_score < SCORE_LINE;
       const inReady   = ['approved','queued'].includes(lead.status);          // 待发送 → 主「发送」
       const isViewed  = lead.status==='sent' && !!lead.has_click;             // 已查看 → 主「趁热跟进」
       const isSent    = lead.status==='sent' && !lead.has_click;              // 已发送 → 主「安排跟进」
@@ -1546,14 +1553,26 @@
               : inReview ? (!lead.email
                 ? `<button class="btn-green dp-primary" onclick="findMail(${lead.id},false)">✉️ 补邮箱</button>
                    <button class="btn-amber" onclick="findMail(${lead.id},true)" title="Hunter 按域名查，每家 1 积分">Hunter 找(1积分)</button>`
-                : `<button class="btn-green dp-primary" ${gateReason?`disabled title="${esc(gateReason)}"`:""} onclick="approveAndReview(${lead.id})">✅ 批准</button>`)
+                : belowLine
+                  // ⭐ 批⑥C：<60 且有邮箱 → 主按钮是「手动发这家」（human_approved 路径），不是一个**灰着点不动的「批准」**。
+                  //   Joe 的用法是"打开一条信息就能当场处理完，不用回列表"——他在详情页看完证据判断机器杀错了，
+                  //   就该在这里直接放行，而不是记住公司名再回翻牌堆找一遍。
+                  //   走的是同一条 human-approve 端点（单条、只豁免分数线、邮箱/合规/幂等/压制/日上限一个不豁免）。
+                  ? `<button class="btn-green dp-primary" ${lead.human_approved?'disabled title="已经人工放行过了"':''} onclick="detailHumanApprove(${lead.id})">✉️ 手动发这家</button>
+                     <span class="hint">${lead.human_approved?'已人工放行，等下一轮自动发送':`${a.match_score} 分低于 ${SCORE_LINE} 分线 —— 机器不会发它。你判断杀错了就放行`}</span>`
+                  : `<button class="btn-green dp-primary" ${gateReason?`disabled title="${esc(gateReason)}"`:""} onclick="approveAndReview(${lead.id})">✅ 批准</button>`)
               : inReady ? `<button class="btn-green dp-primary" ${gateReason?`disabled title="${esc(gateReason)}"`:""} onclick="confirmSend(${lead.id})">📤 发送</button>`
               : isViewed ? `<button class="btn-amber dp-primary" onclick="draftWarm(${lead.id})">🔥 趁热跟进</button>`
               : isSent ? `<button class="btn-green dp-primary" onclick="focusNextAction()">📅 安排跟进</button>`
               : isReplied ? `<button class="btn-won dp-primary" onclick="setStatus(${lead.id},'won')">🤝 标记成交</button>
                             <button class="btn-amber" onclick="setStatus(${lead.id},'ignored')">婉拒归档</button>`
               : ''}
-            ${gateReason && inReview && lead.email ? `<span class="hint" style="color:var(--amber)">⚠️ ${esc(gateReason)}</span>` : ''}
+            ${gateReason && inReview && lead.email && !belowLine ? `<span class="hint" style="color:var(--amber)">⚠️ ${esc(gateReason)}</span>` : ''}
+            ${/* ⭐ 批⑥C「他回了」：邮件回复能靠 IMAP 自动收，**WhatsApp/LinkedIn/电话的回复机器看不见**。
+                 Joe 在手机上收到回复，得有个地方一键告诉系统 —— 否则这条线索会一直躺在"等回复"里，
+                 跟进逻辑还会继续追一个已经在聊的人。合规终态(退订/黑名单/退信)不出这个按钮。 */''}
+            ${(!isReplied && !['won','unsubscribed','blacklisted','bounced'].includes(lead.status))
+              ? `<button class="btn-won" onclick="channelReply(${lead.id})" title="任何渠道回话了都算：WhatsApp / LinkedIn / 电话 / 邮件">💬 他回了</button>` : ''}
             ${(!isReplied && lead.status!=='won') ? `<button class="btn-won" onclick="setStatus(${lead.id},'won')">标记已下单</button>` : ''}
             ${!isReplied ? `<button class="btn-amber" onclick="setStatus(${lead.id},'ignored')">忽略</button>` : ''}
             <button class="dp-danger-weak" onclick="setStatus(${lead.id},'blacklisted')" title="停止联系并拉黑">加黑名单</button>
@@ -1616,6 +1635,44 @@
     window.openLeadWarm = async (id) => { closeToday(); await openDetail(id); if (document.getElementById('warm-body')) draftWarm(id); };
 
     // 批准发送 → 置 approved + 展开滚到开发信 + 露「确认发送」（冷邮件发前必看一眼）
+    // ⭐ 批⑥C：详情页直接「手动发这家」（<60 的 human_approved 路径）。
+    //   走的是跟翻牌堆同一个端点 —— 单条、只豁免分数线，邮箱/合规终态/幂等/压制名单/每日上限一个不豁免。
+    window.detailHumanApprove = async (id) => {
+      const co = document.querySelector('.dp-company')?.textContent || `#${id}`;
+      const sc = document.querySelector('.dp-scoremeta .d-scoreblock')?.textContent || '';
+      if(!(await uiConfirm({ title:"手动发这家？",
+        body:`**${co}**（${sc}，低于 ${SCORE_LINE} 分线）\n\n你看完证据判断机器杀错了 → 它会进「待发送」，由下一轮自动发送把信发出去。\n`
+          + `发送仍然受 每日上限 / 压制名单 / 幂等（不会重发）约束，这些一个都不豁免。\n\n`
+          + `⚠️ 这个口子**只对你亲手点的这一条**开 —— 没有批量版本，机器自己永远碰不到 <${SCORE_LINE} 分的线索。`,
+        confirmText:"放行，发它" }))) return;
+      const r = await fetch(`/api/leads/${id}/human-approve`, { method:"POST" }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (r.error) { toolMsg("失败: "+esc(r.error)); return; }
+      openDetail(id); loadStats(); loadList();   // 重开详情页 → 动作条跟着新状态走
+    };
+    // ⭐ 批⑥C「他回了」：任何渠道回话了都算。
+    //   邮件回复能靠 IMAP 自动收，**WhatsApp/LinkedIn/电话的回复机器看不见** ——
+    //   Joe 在手机上收到回复，得有个地方一键告诉系统。
+    window.channelReply = async (id) => {
+      const lead = (await fetch(`/api/leads/${id}`).then(r=>r.json()).catch(()=>({}))).lead || {};
+      let ch={}; try{ ch = JSON.parse(lead.channels||"{}"); }catch{}
+      const LB = { whatsapp:"🟢 WhatsApp", linkedin:"💼 LinkedIn", facebook:"📘 Facebook",
+                   instagram:"📷 Instagram", telegram:"✈️ Telegram", phone:"📞 电话", email:"✉️ 邮件" };
+      // 这家**实际拥有**的渠道排前面（有 handle 的才可能在那儿回话），邮件在有邮箱时给，最后兜一个「其它」
+      const items = [];
+      for (const k of Object.keys(LB)) {
+        if (k === 'email') { if (lead.email) items.push({ key:'email', label:LB.email, note:'（一般会自动收，手动补记也行）' }); }
+        else if (ch[k]) items.push({ key:k, label:LB[k] });
+      }
+      for (const k of Object.keys(LB)) if (k!=='email' && !ch[k]) items.push({ key:k, label:LB[k], note:'（这家没存这个渠道）' });
+      items.push({ key:'other', label:'其它渠道' });
+      const channel = await uiPick({ title:"他在哪个渠道回你的？",
+        body:"选一个 —— 记准渠道以后能看出哪条路真的通。这家会转到「已回复」，并写进时间线。", items });
+      if (!channel) return;
+      const r = await fetch(`/api/leads/${id}/channel-reply`, { method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({ channel }) }).then(r=>r.json()).catch(e=>({error:String(e)}));
+      if (r.error) { toolMsg("失败: "+esc(r.error)); return; }
+      openDetail(id); loadStats(); loadList();
+    };
     window.approveAndReview = async (id) => {
       const res = await fetch(`/api/leads/${id}/status`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({status:"approved"}) }).then(r=>r.json()).catch(e=>({error:String(e)}));
       if (res.error) { alert(res.error); return; }
@@ -2304,6 +2361,31 @@
         ov.addEventListener('click', (e) => { if(e.target===ov) close(false); });
         document.addEventListener('keydown', onKey);
         setTimeout(()=>{ const ok=ov.querySelector('.cd-ok'); if(ok) ok.focus(); }, 30);
+      });
+    }
+    // 批⑥C 单选弹窗（复用 uiConfirm 的同一套壳/样式/键盘行为）：返回选中的 key，取消返回 null。
+    // 用途：「他回了」要问是哪个渠道回的 —— 渠道是**标识**，得记准是哪一个。
+    function uiPick(opts){
+      opts = opts || {};
+      const items = opts.items || [];
+      return new Promise(resolve => {
+        const ov = document.createElement('div');
+        ov.className = 'cd-overlay';
+        ov.innerHTML = `<div class="cd-card" role="dialog" aria-modal="true">
+          <div class="cd-title">${esc(opts.title||'请选择')}</div>
+          ${opts.body?`<div class="cd-body"><div>${esc(opts.body)}</div></div>`:''}
+          <div class="cd-picks">${items.map(it=>
+            `<button class="cd-pick" type="button" data-k="${esc(it.key)}">${esc(it.label)}${it.note?`<span class="hint"> ${esc(it.note)}</span>`:''}</button>`
+          ).join('')}</div>
+          <div class="cd-actions"><button class="cd-cancel" type="button">取消</button></div></div>`;
+        document.body.appendChild(ov);
+        const close = (v) => { ov.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+        const onKey = (e) => { if(e.key==='Escape'){ e.preventDefault(); close(null); } };
+        ov.querySelectorAll('.cd-pick').forEach(b => b.onclick = () => close(b.dataset.k));
+        ov.querySelector('.cd-cancel').onclick = () => close(null);
+        ov.addEventListener('click', (e) => { if(e.target===ov) close(null); });
+        document.addEventListener('keydown', onKey);
+        setTimeout(()=>{ const f=ov.querySelector('.cd-pick'); if(f) f.focus(); }, 30);
       });
     }
     // 4 个整页共用的顶部返回栏：← 返回列表 + 页名 + 副标题

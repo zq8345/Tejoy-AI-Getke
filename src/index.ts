@@ -743,6 +743,55 @@ app.post("/api/leads/:id/to-bench", async (c) => {
   return c.json({ ok: true, id });
 });
 
+// ---- 批⑥C「他回了」：任何渠道客户回话了 → 置 replied + 写时间线 ----
+//
+// ⭐ 命名与归属遵循 Joe 定的原则："**邮箱和社媒都只是手段**……哪些邮箱发过邮件，就做一个标识，
+//    而不是把邮箱和社媒当成两套独立的系统。"
+//    所以这是 `/api/leads/:id/channel-reply`（线索身上的一个动作），**不是** `/api/bench/*`
+//    —— 工作台不是独立系统，渠道只是标识。
+//
+// 为什么需要它：邮件回复能靠 IMAP 自动收；**WhatsApp/LinkedIn/电话的回复机器看不见**。
+// Joe 在手机上收到回复，得有个地方一键告诉系统 —— 否则这条线索会一直躺在"等回复"里，
+// 跟进逻辑还会继续追一个已经在聊的人。
+const CHANNEL_LABELS: Record<string, string> = {
+  whatsapp: "WhatsApp", linkedin: "LinkedIn", facebook: "Facebook",
+  instagram: "Instagram", telegram: "Telegram", phone: "电话", email: "邮件", other: "其它渠道",
+};
+app.post("/api/leads/:id/channel-reply", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
+  const b = await c.req.json<{ channel?: string; note?: string }>().catch(() => ({}));
+  const key = String(b.channel || "other").trim().toLowerCase();
+  const label = CHANNEL_LABELS[key] || CHANNEL_LABELS.other;
+  const note = String(b.note || "").trim().slice(0, 500);
+
+  const cur = await c.env.DB.prepare("SELECT status FROM leads WHERE id=?").bind(id).first<{ status: string }>();
+  if (!cur) return c.json({ error: "not found" }, 404);
+  // M3 合规终态照拦：退订/黑名单/退信的人"回话了"也不能把他拉回联系流程 —— 那是合规红线
+  if (["unsubscribed", "blacklisted", "bounced"].includes(cur.status)) {
+    return c.json({ error: `「${cur.status}」是合规终态，不能改成已回复` }, 409);
+  }
+
+  await c.env.DB.prepare("UPDATE leads SET status='replied', updated_at=datetime('now') WHERE id=?").bind(id).run();
+  // 落一条 replies 记录 → 时间线自动显示（timeline 端点就是从 replies 读的），
+  // 且收件箱/已回复页的口径能认出它 —— **渠道回复跟邮件回复一样是"有人回你了"**。
+  // ⚠️ 列名是 content 不是 body（schema.sql 里 replies 的真实定义，上批踩过）。
+  await c.env.DB.prepare(
+    `INSERT INTO replies (lead_id, from_email, subject, content, category, summary, received_at)
+     VALUES (?, ?, ?, ?, 'interested', ?, datetime('now'))`
+  ).bind(id, `(${label})`, `${label}回复`, note || `（在 ${label} 上回复了，由人工标记）`,
+         note ? `${label}：${note.slice(0, 60)}` : `${label}上回复了`).run();
+  // ⚠️ **不写 bench_channel / bench_contacted_at**（第一版我写了，实测证明是错的）：
+  //   · 语义反了：那两个字段的意思是"**我们**在哪个渠道碰过他、什么时候"（我们发出去的），
+  //     而「他回了」是他碰我们（进来的）。写进去会自相矛盾 —— 实测撞到过：
+  //     时间线说"LinkedIn上回复了"、字段却是 whatsapp（我用 COALESCE 保了首值，换渠道再回就对不上）。
+  //   · 也没必要：回复渠道已经准确记在这条 replies 里（时间线读的就是它）；
+  //     而"别给正在聊的人发冷邮件"这件事 **status='replied' 本身就挡死了** ——
+  //     自动批准只取 analyzed、发送只取 approved、重扫不碰 replied。
+  //   真正的"每个渠道碰过/没碰过"标识由 D 统一设计（Joe：渠道是线索身上的标识，不是分组）。
+  return c.json({ ok: true, id, channel: key, label });
+});
+
 // ---- 快赢③：设置线索"下一步动作 + 日期"（轻CRM）----
 app.post("/api/leads/:id/next-action", async (c) => {
   const id = Number(c.req.param("id"));
