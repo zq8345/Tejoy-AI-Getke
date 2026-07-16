@@ -328,6 +328,46 @@ export async function runNmeaDiscovery(env: Env, affcode: string): Promise<Direc
   return out;
 }
 
+// rvwithtito RV 离网/太阳能安装商名单：URL + 黑名单单一真源（端点与 cron 自动刷新共用，避免两处漂移）
+export const RVWITHTITO_URL = "https://rvwithtito.com/rv-solar-installers/";
+export const RVWITHTITO_BLACKLIST = [
+  "rvwithtito", "google", "facebook", "instagram", "surecart", "mailerlite", "youtube", "twitter", "amazon",
+  "wp.com", "gravatar", "w.org", "gmpg.org", "w3.org", "schema.org", "googleapis", "gstatic", "jquery",
+  "bootstrapcdn", "cloudflare", "wordpress.org",   // 滤 WP <head> 样板域
+];
+
+// 队列⑦：免费目录源「每周自动刷新」——零 Serper。cron 每 6h 调一次，内部判 >7 天才真跑。
+// 遵守 robots：affcode 之间 + rvwithtito 之前各停 10s（Crawl-delay 10）、礼貌 UA（在各抓取函数里）。
+// 抓到的新公司走现有去重 + 分析管道（cron 的 analyze 步骤会自动按 H3 打分）。
+export async function runDirectoryRefresh(env: Env, opts: { force?: boolean } = {}): Promise<{
+  ran: boolean; reason?: string; inserted: number; detail: Record<string, number>;
+}> {
+  const detail: Record<string, number> = {};
+  if (!opts.force && (await getS(env, "directory_autorefresh_enabled", "1")) !== "1") {
+    return { ran: false, reason: "autorefresh disabled", inserted: 0, detail };
+  }
+  const last = (await getS(env, "directory_last_refresh", "")).trim();
+  if (!opts.force && last) {
+    const ts = Date.parse(last);
+    if (Number.isFinite(ts) && Date.now() - ts < 7 * 24 * 3600 * 1000) {
+      return { ran: false, reason: `last refresh ${last}, <7d`, inserted: 0, detail };
+    }
+  }
+  let inserted = 0;
+  for (let i = 0; i < NMEA_AFFCODES.length; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 10000));   // Crawl-delay 10
+    const r = await runNmeaDiscovery(env, NMEA_AFFCODES[i]);
+    detail[`nmea:${NMEA_AFFCODES[i]}`] = r.inserted;
+    inserted += r.inserted;
+  }
+  await new Promise((r) => setTimeout(r, 10000));                // 换站也停 10s
+  const rv = await runLinkHarvest(env, RVWITHTITO_URL, "rvwithtito", RVWITHTITO_BLACKLIST);
+  detail["rvwithtito"] = rv.inserted;
+  inserted += rv.inserted;
+  await setS(env, "directory_last_refresh", new Date().toISOString());
+  return { ran: true, inserted, detail };
+}
+
 // 通用「网页链接采集」免费源：抓一个页面正文里的外链域名，黑名单第三方域后入库（rvwithtito 等 RV 安装商名单用）
 export async function runLinkHarvest(env: Env, url: string, source: string, blacklist: string[]): Promise<DirectoryResult> {
   const out: DirectoryResult = { fetched: 0, inserted: 0, skipped: 0, noSite: 0, social: 0, errors: [] };

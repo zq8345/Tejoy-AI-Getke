@@ -5,7 +5,7 @@ import { analyzeLead, getProfile, DEFAULT_PROFILE } from "./service";
 import { writeReplyDraft, writeWarmFollowup, DEFAULT_SELLING_POINTS, translateToChinese } from "./openrouter";
 import { scrapeSite } from "./scrape";
 import { sendLead, sendApprovedBatch, sendFollowupBatch, sendWarmFollowupNow, unsubscribeByToken, getSetting, setSetting, addSuppressedEmail, isEmailSuppressed } from "./send";
-import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest } from "./discover";
+import { runDiscovery, getKeywords, seedDefaultKeywords, getSearchConfig, COUNTRIES, DEFAULT_COUNTRIES, recomputeKeywordStats, inferCountryFromWebsite, getSerperUsage, runNmeaDiscovery, runLinkHarvest, runDirectoryRefresh, RVWITHTITO_URL, RVWITHTITO_BLACKLIST } from "./discover";
 import { findLeadEmail } from "./findemail";
 import { ingestReplies } from "./replies";
 import { categorizeCustomerType } from "./taxonomy";
@@ -101,6 +101,25 @@ const ALLOWED_STATUS = new Set([
   // A3：no_reply 已移除——孤儿状态，全局无任何写入方（仅 2 处纯展示查表且都有兜底）
 ]);
 
+// 批④ 找客户「积压刹车条」：进货前先看管道里堵了多少。
+// 瓶颈往往不是线索不够，是 199 家没打分 / 296 家缺邮箱堵在中间 —— 这时再抓 1300 家只会堵得更死。
+async function getBacklog(env: Env): Promise<{ unscored: number; noEmail: number; sendable: number }> {
+  const db = env.DB;
+  const q = async (sql: string) => (await db.prepare(sql).first<{ n: number }>())?.n || 0;
+  return {
+    // 没打分：进来了还没过 AI（cron 会慢慢消化，但堆太多就是堵）
+    unscored: await q("SELECT COUNT(*) AS n FROM leads WHERE status='new'"),
+    // 缺邮箱：打了分但没邮箱 → 发不出去，卡在待审批
+    noEmail: await q("SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id WHERE (l.email IS NULL OR l.email='') AND l.status IN ('analyzed','pending','approved','queued')"),
+    // 能发没发：真能发出去却还躺着（与待办事项 sendable 同一口径）
+    sendable: await q(
+      `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id=l.id
+        WHERE l.status='approved' AND a.match_score >= ${APPROVE_MIN_SCORE}
+          AND l.email IS NOT NULL AND l.email!=''
+          AND lower(l.email) NOT IN (SELECT email FROM suppressed_emails)`),
+  };
+}
+
 // A1 待发送准入门槛（单一真源，bulk-status 与单条 status 共用）：
 // 置 approved 必须 有邮箱 且 已打分 且 ≥60（与发送端 sendApprovedBatch 的 ≥60 门槛一致）。
 // 返回 null=可批准；否则返回拒绝原因。
@@ -150,6 +169,11 @@ async function buildActionSuggestions(env: Env): Promise<{
   const replied = F("replied"), bounced = F("bounced"), unsub = F("unsubscribed");
   const readyCount = F("approved") + F("queued");
   const reviewCount = F("analyzed") + F("pending");
+  // 批③D：原列表页绿横幅（≥70分·已打分·有邮箱·未压制 → 批量批准 Top N）的提示搬到这里，
+  // 只提示 + 跳「待审批」格；批准动作已变成待审批格的「≥70有邮箱→一键全批准」（同一 HIGH_SCORE_READY_WHERE）
+  const highReady = (await db.prepare(
+    `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id = l.id WHERE ${HIGH_SCORE_READY_WHERE}`
+  ).first<{ n: number }>())?.n || 0;
   const rate = (x: number) => (sentLeads > 0 ? x / sentLeads : 0);
   // 累计漏斗（同 #43 口径）求最狠掉点
   const wonC = F("won"), replyC = F("replied") + wonC;
@@ -168,6 +192,8 @@ async function buildActionSuggestions(env: Env): Promise<{
   if (replied > 0) acts.push({ pri: 100, text: `${replied} 条回复待跟进`, cta: { label: "去回复箱", action: "replies" } });
   if (readyCount > 20) acts.push({ pri: 90, text: `${readyCount} 家待发送，今天群发`, cta: { label: "群发开发信", action: "send" } });
   if (highNoSend > 0) acts.push({ pri: 80, text: `还有 ${highNoSend} 家高分（≥80）没发开发信`, cta: { label: "去待发送", action: "group:ready" } });
+  // D：原绿横幅的提示（≥70·有邮箱·未压制 可批准）——只提示+跳待审批，动作在那一格里
+  if (highReady > 0) acts.push({ pri: 78, text: `🎯 ${highReady} 家高分可批准（≥70分 · 有邮箱 · 未压制）`, cta: { label: "去待审批", action: "group:review" } });
   if (reviewCount > 0) acts.push({ pri: 76, text: `${reviewCount} 家已打分待审批`, cta: { label: "去审核", action: "group:review" } });
   if (highNoEmail > 0) acts.push({ pri: 70, text: `${highNoEmail} 家高分还没邮箱`, cta: { label: "去补邮箱", action: "findmail" } });
   if (bounceRate > 0.03) acts.push({ pri: 60, text: `退信率 ${(bounceRate * 100).toFixed(1)}% 偏高，邮箱质量差，建议收紧补邮箱来源`, cta: { label: "看退信/黑名单", action: "group:blacklisted" } });
@@ -201,10 +227,33 @@ app.get("/api/dashboard", async (c) => {
 
   // 3) 国家 / 规范分类 分布
   const byCountry = (await db.prepare(
-    "SELECT country AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country!='' GROUP BY country ORDER BY n DESC"
+    // 批④：GROUP BY UPPER(country) —— 存量遗留的小写码(us)与新写的大写(US)合并，别再出"两个美国"（写入口已在各处堵住）
+    "SELECT UPPER(country) AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country!='' GROUP BY UPPER(country) ORDER BY n DESC"
   ).all()).results;
   const byCategory = (await db.prepare(
     "SELECT customer_category AS v, COUNT(*) AS n FROM lead_analysis WHERE customer_category IS NOT NULL AND customer_category!='' GROUP BY customer_category ORDER BY n DESC"
+  ).all()).results;
+
+  // 批④：按「收件箱类型」切片（通用箱 info@/support@ · 销售箱 sales@/team@ · 个人箱）
+  // 只给 发送(唯一线索)/退订/互动 三个**计数**；比率交前端在 n>=50 时才算（与主比率同一把样本量锁）。
+  const byInbox = (await db.prepare(
+    `SELECT CASE
+        WHEN lower(substr(l.email,1,instr(l.email,'@')-1)) IN
+          ('info','support','contact','hello','admin','office','enquiries','enquiry','inquiry','inquiries','mail','general','reception','service')
+          THEN 'generic'
+        WHEN lower(substr(l.email,1,instr(l.email,'@')-1)) IN
+          ('sales','team','biz','business','partners','partner','wholesale','orders','order','marketing','purchasing','procurement')
+          THEN 'sales'
+        ELSE 'personal' END AS box,
+       COUNT(DISTINCT l.id) AS sent,
+       SUM(CASE WHEN l.status='unsubscribed' THEN 1 ELSE 0 END) AS unsub,
+       SUM(CASE WHEN l.status IN ('replied','won')
+                  OR EXISTS (SELECT 1 FROM emails e2 WHERE e2.lead_id=l.id AND e2.clicked_at IS NOT NULL)
+                THEN 1 ELSE 0 END) AS engaged
+       FROM leads l
+      WHERE l.email IS NOT NULL AND l.email!='' AND instr(l.email,'@')>1
+        AND EXISTS (SELECT 1 FROM emails e WHERE e.lead_id=l.id AND e.status='sent')
+      GROUP BY box ORDER BY sent DESC`
   ).all()).results;
 
   // 4) 近 14 天每日发送 / 回复
@@ -280,6 +329,7 @@ app.get("/api/dashboard", async (c) => {
     rates: { reply: rate(replied), bounce: rate(bounced), unsub: rate(unsubscribed) },
     byCountry,
     byCategory,
+    byInbox,        // 批④：按收件箱类型切片（受 n<50 样本量锁）
     daily,
     scoreBuckets: {
       b0: buckets?.b0 || 0, b40: buckets?.b40 || 0, b60: buckets?.b60 || 0,
@@ -319,7 +369,10 @@ app.get("/api/leads", async (c) => {
     "EXISTS (SELECT 1 FROM emails e WHERE e.lead_id = l.id AND e.opened_at IS NOT NULL) AS has_open, " +
     "EXISTS (SELECT 1 FROM emails e WHERE e.lead_id = l.id AND e.clicked_at IS NOT NULL) AS has_click, " +
     // 阶段派生：最新一条回复的类别，用于判「洽谈中/已婉拒」
-    "(SELECT r.category FROM replies r WHERE r.lead_id = l.id ORDER BY r.id DESC LIMIT 1) AS latest_reply_cat " +
+    "(SELECT r.category FROM replies r WHERE r.lead_id = l.id ORDER BY r.id DESC LIMIT 1) AS latest_reply_cat, " +
+    // 批③追加2：回复箱并入「已回复」页——每行一个线索 + 最新回复摘要/id（页面数据源仍是 /api/leads，不用 /api/replies）
+    "(SELECT r.summary FROM replies r WHERE r.lead_id = l.id ORDER BY r.id DESC LIMIT 1) AS latest_reply_summary, " +
+    "(SELECT r.id FROM replies r WHERE r.lead_id = l.id ORDER BY r.id DESC LIMIT 1) AS latest_reply_id " +
     "FROM leads l LEFT JOIN lead_analysis a ON a.lead_id = l.id";
   const where: string[] = [];
   const binds: any[] = [];
@@ -381,7 +434,7 @@ app.get("/api/leads", async (c) => {
 // ---- 筛选维度可选值（国家 / 规范客户分类），供前端下拉动态生成 ----
 app.get("/api/leads/facets", async (c) => {
   const countries = await c.env.DB.prepare(
-    "SELECT country AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country != '' GROUP BY country ORDER BY n DESC"
+    "SELECT UPPER(country) AS v, COUNT(*) AS n FROM leads WHERE country IS NOT NULL AND country != '' GROUP BY UPPER(country) ORDER BY n DESC"
   ).all();
   const categories = await c.env.DB.prepare(
     "SELECT a.customer_category AS v, COUNT(*) AS n FROM lead_analysis a WHERE a.customer_category IS NOT NULL AND a.customer_category != '' GROUP BY a.customer_category ORDER BY n DESC"
@@ -653,7 +706,22 @@ app.get("/api/today", async (c) => {
     "ORDER BY a.match_score DESC, l.id DESC LIMIT 50"
   ).bind(hsMin).all()).results;
   const sug = await buildActionSuggestions(c.env);   // #47 今日待办顶部「现在就能推进」复用同一引擎
-  return c.json({ dueFollowups, hotReplies, engagedToday, highScore, highScoreMin: hsMin, actions: sug.actions });
+  // 批④ 待办事项=分诊台：这里只给"每类还剩几件"的真实计数，页面按紧急度排、0 的不显示、只跳转不做动作。
+  // ⭐「X 家能发」必须是真能发的口径 = approved 且 有邮箱 且 ≥60分（与 sendApprovedBatch 的取批条件一致）。
+  //    旧版直接拿 approved 总数当"待发送"→ 显示 322 而真值 41，是用户最恼火的那个谎。
+  const sendable = (await db.prepare(
+    `SELECT COUNT(*) AS n FROM leads l JOIN lead_analysis a ON a.lead_id = l.id
+      WHERE l.status='approved' AND a.match_score >= ${APPROVE_MIN_SCORE}
+        AND l.email IS NOT NULL AND l.email != ''
+        AND lower(l.email) NOT IN (SELECT email FROM suppressed_emails)`
+  ).first<{ n: number }>())?.n || 0;
+  const serper = await getSerperUsage(c.env);
+  return c.json({
+    dueFollowups, hotReplies, engagedToday, highScore, highScoreMin: hsMin, actions: sug.actions,
+    sendable,                       // 批④：真能发的家数（approved+有邮箱+≥60+未压制）
+    reviewCount: sug.reviewCount,   // 待审批
+    serper,                         // ⚠️系统警报：Serper 预算
+  });
 });
 
 // ---- CSV 导入（去重）----
@@ -687,9 +755,12 @@ app.post("/api/leads/import", async (c) => {
     }
 
     try {
+      // ⭐批④：CSV 里的两位国家码统一大写落库（英文全名等非两位值原样留给 /api/admin/normalize-countries 规整）
+      const csvCC = String(lead.country || "").trim();
+      const csvCountry = /^[a-z]{2}$/i.test(csvCC) ? csvCC.toUpperCase() : (csvCC || null);
       await c.env.DB.prepare(
         "INSERT INTO leads (company_name, website, email, country, source, keyword, status) VALUES (?, ?, ?, ?, ?, ?, 'new')"
-      ).bind(lead.company_name, lead.website, lead.email, lead.country, source, lead.keyword).run();
+      ).bind(lead.company_name, lead.website, lead.email, csvCountry, source, lead.keyword).run();
       inserted++;
     } catch (e: any) {
       errors.push(`第 ${i + 1} 行: ${e.message}`);
@@ -876,9 +947,12 @@ app.post("/api/settings/followup", async (c) => {
 });
 // ---- 无回复跟进：手动跑一批 ----
 app.post("/api/followup/run", async (c) => {
-  const body = await c.req.json<{ limit?: number }>().catch(() => ({}));
+  const body = await c.req.json<{ limit?: number; ids?: number[] }>().catch(() => ({}));
   const limit = Math.min(Math.max(Number(body.limit) || 10, 1), 50);
-  const out = await sendFollowupBatch(c.env, limit);
+  // 批③C：传 ids 只跟进选中的（走同一条 sendFollowupBatch —— 开关/冷却/次数/每日上限/幂等/压制一个不绕；
+  // engaged 的自动用「趁热」暖变体，所以「跟进选中」与「趁热跟进选中」共用本端点）
+  const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter(Number.isFinite))].slice(0, 500) : [];
+  const out = await sendFollowupBatch(c.env, limit, ids.length ? ids : undefined);
   return c.json(out);
 });
 
@@ -949,9 +1023,7 @@ app.post("/api/discover/nmea", async (c) => {
 // rvwithtito RV 离网/太阳能安装商名单（网页外链采集，黑名单第三方域）
 app.post("/api/discover/rvwithtito", async (c) => {
   try {
-    const out = await runLinkHarvest(c.env, "https://rvwithtito.com/rv-solar-installers/", "rvwithtito",
-      ["rvwithtito", "google", "facebook", "instagram", "surecart", "mailerlite", "youtube", "twitter", "amazon", "wp.com", "gravatar", "w.org",
-       "gmpg.org", "w3.org", "schema.org", "googleapis", "gstatic", "jquery", "bootstrapcdn", "cloudflare", "wordpress.org"]);   // 滤 WP <head> 样板域
+    const out = await runLinkHarvest(c.env, RVWITHTITO_URL, "rvwithtito", RVWITHTITO_BLACKLIST);   // URL+黑名单单一真源，与 cron 自动刷新共用
     return c.json(out);
   } catch (e: any) {
     return c.json({ error: e.message || String(e) }, 500);
@@ -985,12 +1057,19 @@ app.get("/api/settings/search", async (c) => {
     activeKeywords,                    // #45 已勾选关键词（null=全部）
     discoveryEnabled: (await getSetting(c.env, "discovery_enabled", "0")) === "1",   // #S1 后台每6h自动搜索开关（默认关）
     serper: await getSerperUsage(c.env),   // P0-c 今日 Serper 用量 + 预算
+    backlog: await getBacklog(c.env),      // 批④：积压刹车条 —— 瓶颈不是线索不够，是管道里堵着
+    // 队列⑦ 免费目录源每周自动刷新（零 Serper，默认开）
+    dirAutoRefresh: (await getSetting(c.env, "directory_autorefresh_enabled", "1")) === "1",
+    dirLastRefresh: await getSetting(c.env, "directory_last_refresh", ""),
   });
 });
 app.post("/api/settings/search", async (c) => {
-  const b = await c.req.json<{ countries?: string[]; countryList?: string[]; activeKeywords?: string[] | null; perKeyword?: number; discoveryEnabled?: boolean; serperBudget?: number }>().catch(() => ({}));
+  const b = await c.req.json<{ countries?: string[]; countryList?: string[]; activeKeywords?: string[] | null; perKeyword?: number; discoveryEnabled?: boolean; serperBudget?: number; dirAutoRefresh?: boolean }>().catch(() => ({}));
   if (typeof b.discoveryEnabled === "boolean") {
     await setSetting(c.env, "discovery_enabled", b.discoveryEnabled ? "1" : "0");   // #S1 Joe 后台开关
+  }
+  if (typeof b.dirAutoRefresh === "boolean") {
+    await setSetting(c.env, "directory_autorefresh_enabled", b.dirAutoRefresh ? "1" : "0");   // 队列⑦ 每周自动刷新目录（零 Serper，默认开）
   }
   if (b.serperBudget != null) {
     const bn = Number(b.serperBudget);   // 允许 0（完全暂停）；非法值回落 200
@@ -1180,9 +1259,11 @@ app.post("/api/inbound", async (c) => {
   const company = (b.company_name || "").trim().slice(0, 200);
   if (!company) return c.json({ error: "Company name is required" }, 400);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 200) return c.json({ error: "A valid email is required" }, 400);
-  // country 白名单：非法 → null（别信任意 POST 值）
+  // country 白名单：非法 → null（别信任意 POST 值）。cc 保持小写做白名单/展示查表；
+  // ⭐批④：落库一律大写（countryDb），别再制造 US/us 分裂
   const cc = (b.country || "").trim().toLowerCase();
   const country = COUNTRIES[cc] ? cc : null;
+  const countryDb = country ? country.toUpperCase() : null;
   const whereSell = (b.where_sell || "").trim().slice(0, 300);
   const volume = (b.monthly_volume || "").trim().slice(0, 100);
 
@@ -1228,7 +1309,7 @@ app.post("/api/inbound", async (c) => {
     await c.env.DB.prepare(
       "INSERT INTO leads (company_name, email, country, source, status, notes, next_action, next_action_date) " +
       "VALUES (?, ?, ?, 'landing', 'new', ?, '跟进落地页询盘', date('now'))"
-    ).bind(company, email, country, note.slice(0, 500)).run();
+    ).bind(company, email, countryDb, note.slice(0, 500)).run();
   }
 
   // 推飞书（压制态 / 超软限 时跳过；失败不影响入库）
@@ -1262,6 +1343,13 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
       inserted = d.inserted;
     } else { console.log("discovery skipped: discovery_enabled=0"); }
   } catch (e) { console.error("discover:", e); }
+  // 1.5) 队列⑦ 免费目录源每周自动刷新（NMEA + rvwithtito）——**零 Serper**，与上面的付费搜索开关无关。
+  //      内部自判 >7 天才真跑、遵守 Crawl-delay 10 与礼貌 UA；抓到的新公司走同一条去重+分析管道（下面第 2 步会打分）。
+  try {
+    const dr = await runDirectoryRefresh(env);
+    if (dr.ran) { inserted += dr.inserted; console.log(`directory refresh: +${dr.inserted}`, dr.detail); }
+    else console.log("directory refresh skipped:", dr.reason);
+  } catch (e) { console.error("dir-refresh:", e); }
   // 2) 分析未处理的新线索：循环分析到无 new 或达安全上限（Free 子请求预算保守，逐条 try/catch）。
   //    成功→status 转 analyzed→下批取到新的；本批全失败(多为持久问题:模型/网络)→停，别空转浪费子请求。
   const CRON_ANALYZE_MAX = 12; // 单轮最多分析条数（~8-12 安全区，别在一次 Cron 抽干 100+）

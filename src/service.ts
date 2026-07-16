@@ -73,17 +73,19 @@ export async function analyzeLead(env: Env, lead: any): Promise<AnalyzeOutcome> 
     ).bind(lead.id).run();
 
     // 回填国家：仅当 country 为空时补，绝不覆盖已有（SQL 守卫保证幂等）。
-    // ① ccTLD 可靠回填为主（inferCountryFromWebsite 命中返回大写码 → 归一小写）；
-    // ② .com 等通用后缀推不出时，用 AI 保守判国 score.country_code 兜（官网明确才有值、否则空）。
-    // 两级都必须在 COUNTRIES 白名单内，非法一律忽略；不清楚就保持 NULL、不猜、不默认美国。
+    // ① ccTLD 可靠回填为主；② .com 等通用后缀推不出时，用 AI 保守判国 score.country_code 兜。
+    // 两级都必须在 COUNTRIES 白名单内（白名单键是小写，故比对时转小写），非法一律忽略；不清楚保持 NULL、不猜、不默认美国。
+    // ⭐批④：**存库一律大写**。这里以前写小写（注释还写着"归一小写"），正是看板出现"两个美国"(US 55 / us 25) 的源头——
+    //    因为发现入库写的是大写、列表筛选用 UPPER(l.country)=? 所以筛选没露馅，只有看板 GROUP BY 露了。
+    //    比对用小写键、落库用大写，两边各司其职。
     try {
       const ccTld = inferCountryFromWebsite(lead.website || "").toLowerCase();
       let cc = COUNTRIES[ccTld] ? ccTld : "";
-      if (!cc && score.country_code && COUNTRIES[score.country_code]) cc = score.country_code;
+      if (!cc && score.country_code && COUNTRIES[String(score.country_code).toLowerCase()]) cc = String(score.country_code).toLowerCase();
       if (cc) {
         await env.DB.prepare(
           "UPDATE leads SET country=?, updated_at=datetime('now') WHERE id=? AND (country IS NULL OR country='')"
-        ).bind(cc, lead.id).run();
+        ).bind(cc.toUpperCase(), lead.id).run();
       }
     } catch { /* 国家回填为尽力而为，失败不影响分析结果 */ }
 
