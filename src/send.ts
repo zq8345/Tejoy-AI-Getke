@@ -135,6 +135,19 @@ export interface BreakerStatus {
  */
 export async function getBreakerStatus(env: Env): Promise<BreakerStatus> {
   const since = await getSetting(env, "auto_send_resumed_at", "");
+  // ⚠️⚠️ 下面那个 `e.status='sent'` 是**语义要件，不是顺手写的过滤条件。别删、别改成"尝试过的"。**
+  //
+  // 窗口的分母必须是「**真发出去的**信」，不是「尝试发的」——
+  // 退订率衡量的是**收信人的反应**，而没发出去的信不可能招来任何反应。
+  //
+  // 现在 deliverEmail 的 8 个 skipped 场景（压制名单/幂等/同邮箱重复/无邮箱/无草稿/并发被取走）
+  // **全部 return 在 `INSERT INTO emails` 之前**，连一行都不建 —— 所以它们天然进不了这个窗口。
+  // 但那是**当前实现的巧合**，不是保障。哪天有人把 skipped 也落一行（很合理的需求：想看跳过统计），
+  // 或者把这里改成数"尝试"，熔断器就会被**跟开发信质量毫无关系**的跳过拉偏：
+  // 压制名单命中多 → 看起来"失败率高" → 熔断 → 自动发送停了，而信其实写得好好的。
+  //
+  // 2026-07-17 排查记录：总工一度以为 skipped 会污染这个窗口（"加了 email 过滤后就自动消失了"）——
+  // 结论蒙对了但推理是错的。查源码才发现根本不建行。这句注释就是防下一个人重复那个错误模型。
   const row = await env.DB.prepare(
     `WITH w AS (
        SELECT e.lead_id FROM emails e
