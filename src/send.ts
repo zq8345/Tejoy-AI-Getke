@@ -2,6 +2,7 @@
 import type { Env } from "./index";
 import { writeFollowup, writeWarmFollowup } from "./openrouter";
 import { getProfile, ensureDraft } from "./service";
+import { pool, RoundBudget } from "./pool";
 
 const RESEND_URL = "https://api.resend.com/emails";
 
@@ -372,7 +373,12 @@ export async function sendFollowupBatch(env: Env, requested: number, ids?: numbe
 //     autoRoom = 15 - 今天已自动发的，再把 requested 传进来。两个上限是**与**的关系，取更紧的那个生效。
 //   · 结果：自动 ≤15/天，且 全部 ≤50/天。自动跑在 cron 里会先占额度，手动还剩 ≥35 —— 这是有意的：
 //     自动的东西要跑得慢、出事损失小一格。
-export async function sendApprovedBatch(env: Env, requested: number, ids?: number[], autoSent = false): Promise<{ processed: number; sent: number; results: SendOutcome[]; capReached?: boolean; dailyLimit: number; sentToday: number }> {
+export async function sendApprovedBatch(
+  env: Env, requested: number, ids?: number[], autoSent = false,
+  // ⭐ P0-1：并发 + 轮次时间闸。**默认值刻意保持原行为**（并发 1、无时间闸）——
+  //   手动发送走的是同一个函数，不该被这次改动顺手改掉语义。只有 cron 会传这两个。
+  opts: { concurrency?: number; budget?: RoundBudget } = {},
+): Promise<{ processed: number; sent: number; results: SendOutcome[]; capReached?: boolean; dailyLimit: number; sentToday: number; truncatedByTime?: number }> {
   const dailyLimit = Number(await getSetting(env, "daily_send_limit", "15")) || 15;
   const already = await sentToday(env);
   const room = Math.max(0, dailyLimit - already);
@@ -402,22 +408,40 @@ export async function sendApprovedBatch(env: Env, requested: number, ids?: numbe
     : await env.DB.prepare(`${base}${tail}`).bind(take).all();
   const leads = rows.results as any[];
 
-  const results: SendOutcome[] = [];
-  for (const lead of leads) {
+  // ⭐ P0-1：一封信 = 生成草稿(实测 31-43s) + 调 Resend。串行发 25 封要 15 分钟，贴死 cron 的 15 分钟墙。
+  //   并发 3 压到 ~5 分钟。瓶颈在 AI 不在 Resend（Resend 默认 2 req/s，并发 3 × 37s ≈ 0.08 req/s，撞不到）。
+  //   ⚠️ 上线后要看日志有没有 429，有就退到并发 2 —— 这条我没实测过，别当成已验证。
+  const conc = Math.max(1, opts.concurrency || 1);
+  let truncatedByTime = 0;
+
+  const sendOne = async (lead: any): Promise<SendOutcome> => {
+    // ⭐ 时间闸：预算见底就**不再开新的**（已经在飞的那几封让它们发完 —— 半路撕掉会留下 queued 孤儿）。
+    //   这是**平台限制不是业务旋钮**：Cron Trigger 的墙是 15 分钟，撞墙会被拦腰砍断。
+    //   预留 60s：一封信实测最慢 43s，剩不到一分钟就别再开新的了。
+    if (opts.budget && !opts.budget.has(60_000)) { truncatedByTime++; return { ok: false, id: lead.id, skipped: "本轮时间预算用尽，下轮继续" }; }
     // S2 原子取批：approved→queued，仅当当前仍是 approved（并发下只有一方 changes===1 能取到，杜绝同一 lead 被两次群发/自动+手动重叠取走）
     const claim = await env.DB.prepare(
       "UPDATE leads SET status='queued', updated_at=datetime('now') WHERE id=? AND status='approved'"
     ).bind(lead.id).run();
-    if (claim.meta.changes !== 1) { results.push({ ok: false, id: lead.id, skipped: "并发已被取走" }); continue; }
+    if (claim.meta.changes !== 1) return { ok: false, id: lead.id, skipped: "并发已被取走" };
     const out = await sendLead(env, { ...lead, status: "queued" }, autoSent);   // sendLead 成功时置 sent
     if (!out.ok) {
       // 未成功发送 → 退回 approved（保持与原语义一致：非成功线索留在待发送池，可重试）
       await env.DB.prepare("UPDATE leads SET status='approved' WHERE id=? AND status='queued'").bind(lead.id).run();
     }
-    results.push(out);
-  }
+    return out;
+  };
+
+  const results: SendOutcome[] = conc > 1 ? await pool(leads, conc, sendOne) : [];
+  if (conc === 1) for (const lead of leads) results.push(await sendOne(lead));
+
   const sent = results.filter((r) => r.ok).length;
-  return { processed: results.length, sent, results, dailyLimit, sentToday: already + sent, capReached: already + sent >= dailyLimit };
+  // ⚠️ 被时间截断必须**说出来**。静默截断 = "看起来发完了"，而那正是我们一路在修的病。
+  if (truncatedByTime) {
+    console.log(`auto-send: 本轮时间预算用尽，${truncatedByTime} 封顺延到下轮（已发 ${sent} 封，耗时 ${Math.round((opts.budget?.elapsed() || 0) / 1000)}s）` +
+      `。这是平台限制（Cron 15 分钟墙），**不是** Joe 的每日上限在拦。`);
+  }
+  return { processed: results.length, sent, results, dailyLimit, sentToday: already + sent, capReached: already + sent >= dailyLimit, truncatedByTime };
 }
 
 // Landing 落地页：给主动索取价单的询盘发确认邮件（不含具体价，走 deliverEmail → 压制名单/合规页脚自动生效）

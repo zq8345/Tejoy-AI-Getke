@@ -131,14 +131,16 @@ export async function matchReplyToLead(
 const MAX_DRAIN_BATCHES = 12; // 单轮最多抽干 12 批（12*30=360 封），防失控
 
 // 主流程：拉新回复并全部处理。M1：分批抽干（一次 >IMAP_BATCH 封也不丢），游标逐批推进到"实际处理到的 UID"。
-export async function ingestReplies(env: Env): Promise<IngestResult> {
+// opts.timeoutMs：cron 传 25s（一轮只有 15 分钟，收回复排 step 0，它慢一分半后面就少发几封）；
+//   Joe 手点拉取不传 → 走默认 90s（他自己在屏幕前等）。真超了游标可续，下一班接着收。
+export async function ingestReplies(env: Env, opts: { timeoutMs?: number } = {}): Promise<IngestResult> {
   const firstUid = Number(await getSetting(env, "imap_last_uid", "0")) || 0;
 
   // 首次基线：只记录 maxUid，不回填历史
   if (firstUid <= 0) {
     let baseFetched: FetchWrap;
     try {
-      baseFetched = await fetchNewMessages(env, firstUid);
+      baseFetched = await fetchNewMessages(env, firstUid, IMAP_BATCH, opts.timeoutMs);
     } catch (e: any) {
       return { fetched: 0, ingested: 0, matched: 0, results: [], error: e.message || String(e) };
     }
@@ -157,7 +159,7 @@ export async function ingestReplies(env: Env): Promise<IngestResult> {
   for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch++) {
     let fetched: FetchWrap;
     try {
-      fetched = await fetchNewMessages(env, cursor);
+      fetched = await fetchNewMessages(env, cursor, IMAP_BATCH, opts.timeoutMs);
     } catch (e: any) {
       // 首批就失败 → 报错整体失败；后续批失败 → 保留已处理进度，结束本轮（下轮 Cron 继续）
       if (batch === 0) return { fetched: 0, ingested: 0, matched: 0, results: [], error: e.message || String(e) };

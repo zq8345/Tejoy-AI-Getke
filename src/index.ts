@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { pool, RoundBudget, SEND_CONCURRENCY, estimateDailyCapacity } from "./pool";
+import { REPLY_CRON_TIMEOUT_MS } from "./imap";
 import { installDevEgressGuard, BUILD_MARKER, devGuardOn } from "./devguard";
 import { basicAuth } from "hono/basic-auth";
 import { parseCsv, mapRowToLead } from "./csv";
@@ -1160,6 +1162,9 @@ app.get("/api/settings/sending", async (c) => {
     auto_sent_today: await autoSentToday(c.env),
     // 批⑩B：发送确认弹窗要说清"今日上限还剩几封"。复用本端点加一个字段，不新开端点。
     sent_today: await sentToday(c.env),
+    // ⭐ P0-1：产能估算 —— 让设置页当场告诉 Joe"你填的数能不能达到"。
+    //   这**不是上限**（他填多少是多少），是"做不到就当场说"，绝不悄悄砍。
+    capacity: estimateDailyCapacity(),
     breaker: {
       window: br.window, unsubs: br.unsubs,
       rate: Math.round(br.rate * 1000) / 10,          // 百分数，一位小数
@@ -1734,19 +1739,6 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 const ANALYZE_CONCURRENCY = 3;
 
 /** 定长并发池：始终保持 n 个在飞，完一个补一个。保持输入顺序返回结果。 */
-async function pool<T, R>(items: T[], n: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let next = 0;
-  const worker = async () => {
-    for (;;) {
-      const i = next++;
-      if (i >= items.length) return;
-      out[i] = await fn(items[i], i);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
-  return out;
-}
 
 // 重置组：这些状态的线索会被打回 new 重新分档；其余状态只刷新 analysis、status 不动
 const RESCAN_RESET_STATUSES = ["new", "analyzed", "approved", "queued", "pending"];
@@ -1798,6 +1790,21 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   //    而 Joe 的标准是"428 条当天跑完"。两件事，两条通道，互不干扰。
   let inserted = 0, analyzed = 0, replies = 0, autoApproved = 0, autoSent = 0;
 
+  // ⭐⭐ P0-1：一轮 cron 的时间预算表。**这是平台限制（Cron Trigger 15 分钟墙），不是业务旋钮。**
+  //    业务旋钮（每天发几封）在 settings 里，归 Joe。谁都不许拿这里的数去砍他的数。
+  //    全轮共用一份预算 —— 收回复/discovery/分析/发信/跟进都从同一个 13 分钟里花，
+  //    谁排前面谁先花。所以每一步都要看表，别让前面的把后面的饿死。
+  const budget = new RoundBudget(Date.now());
+
+  // ⭐ cron 已提频到**每小时**（0 * * * *）—— 因为 Joe 要 100 封/天，而一封信实测 31-43s，
+  //    4 班怎么都装不下。24 班 × 每班能发多少 = 他填的数才有可能达到。
+  //
+  // ⚠️⚠️ 但 **discovery / directory 仍然只在 0/6/12/18 点跑** —— 这是硬约束：
+  //    它们烧 Serper 积分，跟着提频 = **烧钱速度直接 ×6**。发信提频不该让找客户跟着提频，
+  //    两件事的成本结构完全不同（发信几乎免费，搜索是真金白银）。
+  const hourUtc = new Date(event.scheduledTime).getUTCHours();
+  const isDiscoveryRound = hourUtc % 6 === 0;   // 0/6/12/18 —— 与提频前的老节奏**一模一样**，Serper 用量一个字节不变
+
   // ⭐ step 0）收客户回复 —— **排在最前面，这个顺序本身是修复的一部分**。
   //
   // 它以前排在第 3 步（找客户 → 分析 12 条 → 自动批准 → 自动发送 → **才轮到收回复**）。
@@ -1815,12 +1822,24 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
       console.error("replies: 缺少 LARK_IMAP_PASS，收回复整段跳过");
       await alertReplyFailure(env, "缺少 LARK_IMAP_PASS（IMAP 密码没配），收回复功能整个没在跑");
     } else {
-      const r = await ingestReplies(env);
+      // ⭐ P0-1：cron 给它 25s 时间盒 —— 一轮总共 15 分钟，它排 step 0，慢一分半后面就少发两三封。
+      //   实测批⑧ 改成整批 FETCH 后整个会话 7.9s，25s 有 3 倍余量。超了也不丢：游标可续，下班（1 小时后）接着收。
+      const r = await ingestReplies(env, { timeoutMs: REPLY_CRON_TIMEOUT_MS });
       replies = r.ingested || 0;
       if (r.error) {                       // ← 关键：这个 error 以前没人读
         console.error("replies:", r.error);
-        await alertReplyFailure(env, r.error);
-      }
+        // ⚠️ 区分**偶发超时**和**真故障**：cron 现在每小时一班，一次 25s 超时多半是网络抖动，
+        //   为它推飞书 = 制造噪音，而噪音会让 Joe 学会无视告警 —— 那比不告警更糟。
+        //   连续 3 轮（= 3 小时收不到回复）才是真信号。真故障（登录失败/解析坏了）立刻吼，不等。
+        const isTimeout = /会话超时/.test(r.error);
+        if (!isTimeout) { await setSetting(env, "reply_timeout_streak", "0"); await alertReplyFailure(env, r.error); }
+        else {
+          const streak = (Number(await getSetting(env, "reply_timeout_streak", "0")) || 0) + 1;
+          await setSetting(env, "reply_timeout_streak", String(streak));
+          console.log(`replies: 超时第 ${streak} 轮连续（≥3 轮才推飞书，避免噪音）`);
+          if (streak >= 3) await alertReplyFailure(env, `收回复连续 ${streak} 轮超时（≈${streak} 小时没收到回复了）：${r.error}`);
+        }
+      } else await setSetting(env, "reply_timeout_streak", "0");   // 成功一次就清零
     }
   } catch (e: any) {
     console.error("replies:", e);
@@ -1829,7 +1848,12 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
 
   // 1) 搜索找新客户（每关键词 5 条，控制用量）—— #S1 受 discovery_enabled 开关控制（默认关，防 cron 每 6h 全量烧 Serper 积分）
   try {
-    if ((await getSetting(env, "discovery_enabled", "0")) === "1") {
+    // ⚠️⚠️ P0-1 硬约束：cron 提频到每小时后，**这一步仍然只在 0/6/12/18 点跑**。
+    //    它烧 Serper 积分（真金白银），跟着提频 = 烧钱速度 ×6。发信提频 ≠ 找客户提频。
+    //    与提频前的老节奏完全一致 —— Serper 用量一个字节不变。
+    if (!isDiscoveryRound) {
+      console.log(`discovery skipped: 本轮 ${hourUtc}:00 不是找客户班次（只在 0/6/12/18 跑，保护 Serper 预算）`);
+    } else if ((await getSetting(env, "discovery_enabled", "0")) === "1") {
       const d = await runDiscovery(env, { perKeyword: 5, maxCombos: 20 });   // P0-b 每轮只跑 20 组合(轮转)，不再全量 572；P0-c 预算内
       inserted = d.inserted;
     } else { console.log("discovery skipped: discovery_enabled=0"); }
@@ -1837,12 +1861,22 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
   // 1.5) 队列⑦ 免费目录源每周自动刷新（NMEA + rvwithtito）——**零 Serper**，与上面的付费搜索开关无关。
   //      内部自判 >7 天才真跑、遵守 Crawl-delay 10 与礼貌 UA；抓到的新公司走同一条去重+分析管道（下面第 2 步会打分）。
   try {
-    const dr = await runDirectoryRefresh(env);
-    if (dr.ran) { inserted += dr.inserted; console.log(`directory refresh: +${dr.inserted}`, dr.detail); }
-    else console.log("directory refresh skipped:", dr.reason);
+    // ⚠️ 同样只在 0/6/12/18 跑。它虽然零 Serper，但要**爬别人的站**（NMEA 有 Crawl-delay 10）——
+    //    每小时去敲一次门是对人家站点的骚扰，哪怕内部有 >7 天的自判也不该每小时问一遍。
+    //    "免费"不等于"可以随便跑"。
+    if (!isDiscoveryRound) {
+      console.log(`directory refresh skipped: 本轮 ${hourUtc}:00 不是找客户班次`);
+    } else {
+      const dr = await runDirectoryRefresh(env);
+      if (dr.ran) { inserted += dr.inserted; console.log(`directory refresh: +${dr.inserted}`, dr.detail); }
+      else console.log("directory refresh skipped:", dr.reason);
+    }
   } catch (e) { console.error("dir-refresh:", e); }
   // 2) 分析未处理的新线索：循环分析到无 new 或达安全上限（Free 子请求预算保守，逐条 try/catch）。
   //    成功→status 转 analyzed→下批取到新的；本批全失败(多为持久问题:模型/网络)→停，别空转浪费子请求。
+  // ⚠️ **这是平台限制，不是业务旋钮。业务旋钮在 settings 里，归 Joe。**
+  //    它保护的是 Workers 的子请求/CPU 预算，跟"每天发几封"是两码事 —— 别把它当成可调的业务参数。
+  //    （对照 P0-1 拔掉的那个 `Math.min(autoRoom,5)`：那个是**业务**常数，锁死了 Joe 的每日上限，已删。）
   const CRON_ANALYZE_MAX = 12; // 单轮最多分析条数（~8-12 安全区，别在一次 Cron 抽干 100+）
   let attempts = 0;
   let fetchSkipped = 0;
@@ -1938,18 +1972,47 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
       // 结构上不可能突破 50。详见 send.ts sendApprovedBatch 的注释。
       const autoLimit = Number(await getSetting(env, "auto_send_daily_limit", "15")) || 15;
       const autoRoom = Math.max(0, autoLimit - (await autoSentToday(env)));
-      const take = Math.min(autoRoom, 5); // 每轮最多 5 封，摊到 4 次 cron，别一轮打光
+      // ⭐⭐ P0-1：`Math.min(autoRoom, 5)` 已删。**那一行把 Joe 的旋钮锁死了** ——
+      //    他设 auto_send_daily_limit=100，实际上限是 4 班 × 5 = **20 封/天**，他的设置根本没生效。
+      //    Joe 原话："把每天发多少封的权限交给我，我会根据情况自己去调整。"
+      //
+      //    现在 `take = autoRoom`（当天剩余额度），**`auto_send_daily_limit` 是唯一的业务闸**。
+      //    每轮发不完不要紧：cron 已提频到每小时（24 班），剩下的下一班继续。
+      //
+      //    ⚠️ 那个 `5` 的**原意是对的**（别一轮打光、摊到多班），但它不该是常数，更不该是**业务**常数。
+      //       "别一轮打光"的真实约束是 **Cron 15 分钟墙**，那是**平台限制** ——
+      //       所以它现在由 `budget`（看表）来管，不由一个我们自己拍的数字来管。
+      const take = autoRoom;
       if (take > 0) {
-        const r = await sendApprovedBatch(env, take, undefined, true);  // ← 同一条 sendApprovedBatch，autoSent=true
+        // 并发 3：一封信实测 31-43s（瓶颈是 AI 生成草稿，不是 Resend）。串行 25 封 = 15 分钟贴死墙，并发 3 ≈ 5 分钟。
+        const r = await sendApprovedBatch(env, take, undefined, true, { concurrency: SEND_CONCURRENCY, budget });
         autoSent = r.sent;
-        if (autoSent) console.log(`auto-send: 发出 ${autoSent} 封（今日自动上限 ${autoLimit}，全局 ${r.dailyLimit}，今日已发 ${r.sentToday}）`);
-      } else console.log(`auto-send: 今日自动额度已用尽（${autoLimit}/天）`);
+        // ⚠️ 必须报**取了几条**，不只报发了几封 —— "取 6 发 0" 和 "取 0 发 0" 是完全不同的两件事：
+        //   前者=有池子但全被跳过（压制/幂等/无草稿），后者=池子本来就空。只报 sent 会把这两者混成一句话，
+        //   而今天查"20 小时没发信"时，正是因为分不清这两者才多绕了一圈。
+        console.log(`auto-send: 取 ${r.processed} 条 → 发出 ${autoSent} 封（本轮额度 ${take}，Joe 设的自动上限 ${autoLimit}/天，全局 ${r.dailyLimit}，今日已发 ${r.sentToday}）`);
+        if (r.processed && !autoSent && !r.truncatedByTime) {
+          const why = r.results.filter((x) => !x.ok).map((x) => x.skipped || x.error).slice(0, 3).join(" / ");
+          console.log(`auto-send: 有池子但一封没发出，前几条原因：${why}`);
+        }
+      } else console.log(`auto-send: 今日自动额度已用尽（${autoLimit}/天，这是 Joe 设的，正常）`);
     }
   } catch (e) { console.error("auto-send:", e); }
 
   // 3) 收回复已挪到 **step 0**（cron 最前面）—— 见那里的注释。这里只留个路标防止有人再排回来。
-  // 3.5) 无回复自动跟进（仅当开关开启；每轮最多 5 封，遵守每日上限）
-  try { await sendFollowupBatch(env, 5); } catch (e) { console.error("followup:", e); }
+  // 3.5) 无回复自动跟进（仅当开关开启；遵守每日上限）
+  // ⭐ P0-1：原来是 `sendFollowupBatch(env, 5)` —— **跟进也被锁在 20 封/天**（4班×5），同一个病。
+  //   现在传当天剩余额度：`daily_send_limit` 是唯一的闸，它是 Joe 的旋钮。
+  //   （sendFollowupBatch 内部还会再 min 一次 dailyLimit-already，传大了也不会突破。）
+  // ⚠️ 时间预算见底就整段跳过 —— 跟进比初次触达低一档：真客户的第一封信优先于第二次催。
+  //   跳过要说出来，别静默。
+  try {
+    const fuLimit = Number(await getSetting(env, "daily_send_limit", "15")) || 15;
+    const fuRoom = Math.max(0, fuLimit - (await sentToday(env)));
+    if (!budget.has(90_000)) console.log(`followup: 本轮时间预算只剩 ${Math.round(budget.remaining()/1000)}s，跳过跟进，下轮继续（平台限制，非 Joe 的上限）`);
+    else if (fuRoom <= 0) console.log(`followup: 今日发信额度已用尽（${fuLimit}/天，Joe 设的）`);
+    else await sendFollowupBatch(env, fuRoom);
+  } catch (e) { console.error("followup:", e); }
 
   // 3.55) 顺带修①「没回音出口」：跟进次数用尽 + 又过了 X 天还是没回应 → 归档。
   //

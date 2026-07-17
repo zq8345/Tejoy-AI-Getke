@@ -86,6 +86,13 @@ function q(s: string): string { return `"${s.replace(/\\/g, "\\\\").replace(/"/g
 //   2. 超时给足：收回复是整条链上最值钱的一步（一个真客户回信 > 分析 12 条新线索），
 //      不该为了"别拖垮 cron"把它掐死；何况它已挪到 cron 最前面（index.ts step 0）。
 const IMAP_SESSION_TIMEOUT_MS = 90000;
+//
+// ⭐ P0-1 追加：**这个 90s 是"Joe 手点拉取"的值，不是 cron 的值。**
+//    cron 一轮总共只有 15 分钟，收回复排在 step 0 —— 它慢一分半，后面发信就少发两三封。
+//    所以 cron 传 REPLY_CRON_TIMEOUT_MS(25s) 进来，Joe 手点走默认 90s（他自己在屏幕前等，等得起）。
+//    25s 够不够？批⑧ 把逐封 FETCH 改成一条命令取整批后，**实测整个会话 7.9s** —— 25s 有 3 倍余量。
+//    真超了也不要紧：imap_last_uid 游标天然可续，下一班（现在只隔 1 小时，不是 6 小时）接着收。
+export const REPLY_CRON_TIMEOUT_MS = 25000;
 
 export interface FetchResult {
   maxUid: number;          // 邮箱内全体最大 UID（首次基线用它）
@@ -96,7 +103,7 @@ export interface FetchResult {
 
 // 连接 Lark IMAP，拉取 UID > sinceUid 的新邮件（首次 sinceUid<=0 时只取基线不回填）。
 // M2：整个会话被 IMAP_SESSION_TIMEOUT_MS 总超时兜住，超时抛错，由上层 try/catch 兜住不拖垮 Cron。
-export async function fetchNewMessages(env: Env, sinceUid: number, maxCount = IMAP_BATCH): Promise<FetchResult> {
+export async function fetchNewMessages(env: Env, sinceUid: number, maxCount = IMAP_BATCH, timeoutMs = IMAP_SESSION_TIMEOUT_MS): Promise<FetchResult> {
   const host = env.LARK_IMAP_HOST || "imap.larksuite.com";
   const port = Number(env.LARK_IMAP_PORT) || 993;
   const user = env.LARK_IMAP_USER || env.SENDER_EMAIL || "hello@tejoy.net";
@@ -112,7 +119,7 @@ export async function fetchNewMessages(env: Env, sinceUid: number, maxCount = IM
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`IMAP 会话超时（>${IMAP_SESSION_TIMEOUT_MS / 1000}s）`)), IMAP_SESSION_TIMEOUT_MS);
+    timer = setTimeout(() => reject(new Error(`IMAP 会话超时（>${timeoutMs / 1000}s）`)), timeoutMs);
   });
 
   const session = async (): Promise<FetchResult> => {
