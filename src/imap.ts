@@ -127,10 +127,27 @@ export async function fetchNewMessages(env: Env, sinceUid: number, maxCount = IM
     const login = await runCmd(rd, wr, "a1", `LOGIN ${q(user)} ${q(pass)}`);
     if (login.status !== "OK") throw new Error("IMAP 登录失败：" + login.lines.slice(-1)[0]);
 
-    await runCmd(rd, wr, "a2", "SELECT INBOX");
+    // ⚠️ 这两条命令的 status 以前**没人看** —— 这是批⑧ 我只堵了一半的那个洞。
+    //    SELECT/SEARCH 返回 NO/BAD（邮箱被锁、被限流、权限变了）时代码照样往下走，
+    //    最后得到 allUids=[] → "没有新邮件" → **返回成功、不报错、不告警**。
+    //    跟批⑧ 修掉的 FETCH 那个病一模一样：我给 FETCH 加了响铃，漏了这里。
+    const sel = await runCmd(rd, wr, "a2", "SELECT INBOX");
+    if (sel.status !== "OK") throw new Error("IMAP SELECT INBOX 失败：" + sel.lines.slice(-1)[0]);
 
     const search = await runCmd(rd, wr, "a3", "UID SEARCH ALL");
-    const searchLine = search.lines.find((l) => /^\* SEARCH/i.test(l)) || "";
+    if (search.status !== "OK") throw new Error("IMAP UID SEARCH 失败：" + search.lines.slice(-1)[0]);
+
+    // ⭐ **"真的没新邮件" 和 "响应解析不出来" 必须区分开** —— 它俩以前长得一模一样（都是 allUids=[]）。
+    //    · 邮箱是空的：服务器**仍会**回一行 `* SEARCH`（后面没数字）→ 正常，不报错
+    //    · 一行 `* SEARCH` 都没有：格式变了 / 回了我们不认识的东西（如 ESEARCH 走 `* ESEARCH`）
+    //      → **解析器坏了**，不是"没有新邮件"。必须响，否则又是"静默断了不知道多久"。
+    const searchLine = search.lines.find((l) => /^\* SEARCH/i.test(l));
+    if (searchLine === undefined) {
+      throw new Error(
+        `IMAP SEARCH 解析失败：命令返回 OK 但一行 * SEARCH 都没有（服务器响应格式可能变了）。` +
+        `响应=${search.lines.slice(0, 3).join(" | ").slice(0, 200)}`
+      );
+    }
     const allUids = (searchLine.replace(/^\* SEARCH/i, "").trim().match(/\d+/g) || []).map(Number);
     const { newUids, attempted, processedMaxUid, maxUid } = computeBatch(allUids, sinceUid, maxCount);
 
