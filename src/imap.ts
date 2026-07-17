@@ -189,6 +189,32 @@ export async function fetchNewMessages(env: Env, sinceUid: number, maxCount = IM
       if (f.literals.length && !messages.length) {
         throw new Error(`IMAP 解析失败：取到 ${f.literals.length} 封正文但一个 UID 都读不出（服务器响应格式可能变了）`);
       }
+      // ⭐⭐ 2026-07-17 生产实证暴露的洞（批⑧ 我只堵了上面那一半）：
+      //    **FETCH 一个 literal 都没返回**时，上面那句的 `f.literals.length` 是 0 → 不触发 →
+      //    messages=[] → 无错、无告警，而 computeBatch 的 processedMaxUid 已经 = 本批最大 UID
+      //    → **游标照样推进，这批信被永久跳过。**
+      //    生产上就这么发生了：游标从 2 跳到 5、`replies` 仍是 0 —— 3 封信（很可能包含
+      //    Michael 那封真客户回信）**被无声地跨过去了**。
+      //
+      //    M1 那条"尝试过就算已处理"的原意是对的（防被删的 UID 让下轮无限重试），
+      //    但它和"整批 FETCH 失败"长得一模一样。区分标准：
+      //      · **一部分**取到了 → 剩下的多半是真被删了 → 照常推进（M1 原意）
+      //      · **一封都没取到**（而 SEARCH 明明说有）→ 这不是"都被删了"，是**这次 FETCH 整个失败了**
+      //        → throw。抛出去游标就不会推进（下面的 return 到不了），下一班原地重试。
+      //
+      //    ⚠️ **这个修法有代价，写清楚不藏着**：如果一批里的信**真的全被删了**，
+      //       游标会卡住、每班重试、每天吼一条飞书 —— 那正是 M1 当初要防的无限重试。
+      //       我仍然认为这个取舍是对的：
+      //         **卡住 + 吼**（有人会看见、手动推一下游标就好）
+      //         ≫ **静默永久丢一个真客户的回信**（没人会知道，永远找不回来）。
+      //       Joe 现在每一封真实回复都是钱。宁可我们被吵，也不能让它无声消失。
+      if (newUids.length && !messages.length) {
+        throw new Error(
+          `IMAP FETCH 失败：SEARCH 说有 ${newUids.length} 封新邮件（UID ${newUids.join(",")}），` +
+          `但一封正文都没取到。**游标不推进**，下一班重试 —— 推进的话这些信就被永久跳过了。` +
+          `（若确认这些 UID 是真被删了，手动把 imap_last_uid 推到 ${newUids[newUids.length - 1]} 即可解卡。）`
+        );
+      }
     }
 
     await runCmd(rd, wr, "a9", "LOGOUT").catch(() => {});
